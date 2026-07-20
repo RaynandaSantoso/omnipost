@@ -1,0 +1,19 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// Single-tenant app: one seeded row. Kept as a real table (rather than a
+// hardcoded constant) so every domain table can carry a user_id and later
+// multi-user support is additive, not a schema rewrite.
+model User {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+}
