@@ -10,6 +10,12 @@ const configSchema = z.object({
   NODE_ENV: z
     .enum(["development", "production", "test"])
     .default("development"),
+  // Optional shared-password access gate. Unset (or blank) means the app
+  // runs open, which is the correct behaviour for a local-only install.
+  ACCESS_PASSWORD: z
+    .string()
+    .optional()
+    .transform((value) => (value && value.length > 0 ? value : undefined)),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;
