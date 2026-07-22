@@ -17,6 +17,9 @@ export async function register() {
 
     const { registerShutdownHandlers } = await import("@/lib/shutdown");
     registerShutdownHandlers();
+
+    const { startJobRunner } = await import("@/lib/job-runner");
+    startJobRunner();
   } catch (error) {
     // Next.js logs a thrown instrumentation error but does not itself exit
     // the process — left alone, the server keeps accepting requests in a

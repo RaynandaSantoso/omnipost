@@ -16,4 +16,35 @@ datasource db {
 model User {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())
+  uploads   Upload[]
+}
+
+// One user-initiated publish action: the source video plus the shared
+// title/description used across every platform it fans out to.
+model Upload {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  title       String
+  description String
+  fileName    String
+  filePath    String
+  fileSize    Int
+  createdAt   DateTime @default(now())
+  jobs        Job[]
+}
+
+// One unit of background work: one upload to one platform. v0.1 fans out
+// to exactly one (dry-run) Job per Upload; real multi-platform fan-out
+// arrives with the YouTube/TikTok/Instagram adapters.
+model Job {
+  id        String   @id @default(cuid())
+  uploadId  String
+  upload    Upload   @relation(fields: [uploadId], references: [id])
+  platform  String
+  status    String   @default("pending")
+  resultUrl String?
+  error     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
