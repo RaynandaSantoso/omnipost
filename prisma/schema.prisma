@@ -45,6 +45,17 @@ model Job {
   status    String   @default("pending")
   resultUrl String?
   error     String?
+  // Retry bookkeeping. attempts counts claims, not failures, so a worker
+  // that crashes mid-upload burns an attempt too and a poisoned job can
+  // never be reclaimed forever.
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime?
+  // Lease: which worker holds this job and until when. An expired lease is
+  // what makes a job reclaimable after a crash, rather than stuck.
+  leaseOwner     String?
+  leaseExpiresAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([status, nextAttemptAt])
 }

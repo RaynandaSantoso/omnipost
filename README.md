@@ -20,6 +20,14 @@ Enter it once at `/login`; a session cookie (`omnipost_session`) is issued that'
 
 **TLS is your responsibility, not the app's.** The app doesn't refuse to boot without HTTPS — it can't always prove a reverse proxy in front of it is terminating TLS — but running any non-localhost deployment without one is unsupported: your password and session cookie would be sent in the clear. Put a TLS-terminating reverse proxy (Caddy, nginx, a platform load balancer) in front of any instance reachable off your own machine. If the app receives a plaintext request, it logs a one-time warning. Source-IP rate limiting trusts the *last* hop of `X-Forwarded-For` — the address your reverse proxy itself observed — so it assumes exactly one reverse proxy in front of the app.
 
+### Uploads and the job engine
+
+An upload is durable work, not a request that has to finish while you wait: `POST /api/uploads` writes an `Upload` and one `Job` per target platform and returns immediately. A background runner in the same process claims each job by taking a **lease** (`JOB_LEASE_MS`, default 30s) and renews it while it works, so a job is never picked up twice — and a job whose worker died stops being anyone's job once its lease lapses, rather than sitting in `uploading` forever.
+
+- **Restarts are safe.** On boot, jobs holding an expired lease go back to `pending` (after a backoff, so a job that reliably kills the process can't spin the fresh instance); jobs that were already out of attempts are marked `failed`. On `SIGTERM` the runner stops claiming, waits out the upload it's running, hands back any lease still held (without spending one of its attempts), and exits.
+- **Transient failures retry themselves.** A retryable failure (rate limit, 5xx, network) is rescheduled with exponential backoff plus jitter — `JOB_BACKOFF_BASE_MS` doubling per attempt up to `JOB_BACKOFF_MAX_MS` — until `JOB_MAX_ATTEMPTS` is spent, after which the job stops and waits for you.
+- **Real rejections don't.** A terminal failure (bad credentials, rejected content, quota exhausted) is never retried automatically — retrying it would just hammer a platform that is telling you no.
+
 ## Local development (without Docker)
 
 ```sh

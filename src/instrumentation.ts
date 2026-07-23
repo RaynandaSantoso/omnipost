@@ -18,7 +18,13 @@ export async function register() {
     const { registerShutdownHandlers } = await import("@/lib/shutdown");
     registerShutdownHandlers();
 
-    const { startJobRunner } = await import("@/lib/job-runner");
+    const { recoverStalledJobs, startJobRunner } = await import(
+      "@/lib/job-runner"
+    );
+    // Before this instance claims anything, settle whatever the previous
+    // one left behind — otherwise a job interrupted by a restart sits in
+    // "uploading" until its lease lapses, or forever if it was orphaned.
+    await recoverStalledJobs();
     startJobRunner();
   } catch (error) {
     // Next.js logs a thrown instrumentation error but does not itself exit

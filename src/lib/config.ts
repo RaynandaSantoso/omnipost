@@ -1,4 +1,14 @@
 import { z } from "zod";
+import { JOB_POLICY_DEFAULTS } from "@/lib/job-policy";
+
+// Env vars arrive as strings; a malformed one must name itself and never
+// print its value, so the message is built from the variable name only.
+function positiveInt(name: string) {
+  return z.coerce
+    .number({ message: `${name} must be a positive integer` })
+    .int(`${name} must be a positive integer`)
+    .positive(`${name} must be a positive integer`);
+}
 
 const configSchema = z.object({
   DATABASE_URL: z
@@ -16,6 +26,19 @@ const configSchema = z.object({
     .string()
     .optional()
     .transform((value) => (value && value.length > 0 ? value : undefined)),
+  // Job engine policy. Defaults are sensible for a single-user instance;
+  // an operator tuning them against a stricter platform quota should not
+  // have to edit code.
+  JOB_MAX_ATTEMPTS: positiveInt("JOB_MAX_ATTEMPTS").default(
+    JOB_POLICY_DEFAULTS.maxAttempts,
+  ),
+  JOB_LEASE_MS: positiveInt("JOB_LEASE_MS").default(JOB_POLICY_DEFAULTS.leaseMs),
+  JOB_BACKOFF_BASE_MS: positiveInt("JOB_BACKOFF_BASE_MS").default(
+    JOB_POLICY_DEFAULTS.backoffBaseMs,
+  ),
+  JOB_BACKOFF_MAX_MS: positiveInt("JOB_BACKOFF_MAX_MS").default(
+    JOB_POLICY_DEFAULTS.backoffMaxMs,
+  ),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;
