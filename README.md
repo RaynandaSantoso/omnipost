@@ -28,6 +28,12 @@ An upload is durable work, not a request that has to finish while you wait: `POS
 - **Transient failures retry themselves.** A retryable failure (rate limit, 5xx, network) is rescheduled with exponential backoff plus jitter — `JOB_BACKOFF_BASE_MS` doubling per attempt up to `JOB_BACKOFF_MAX_MS` — until `JOB_MAX_ATTEMPTS` is spent, after which the job stops and waits for you.
 - **Real rejections don't.** A terminal failure (bad credentials, rejected content, quota exhausted) is never retried automatically — retrying it would just hammer a platform that is telling you no.
 
+### Connecting YouTube
+
+In your own Google Cloud project, enable the YouTube Data API v3, create an OAuth 2.0 **Web application**, and add the exact callback URL configured in `YOUTUBE_REDIRECT_URI` (for example, `https://your-host/api/platforms/youtube/callback`). Publish the OAuth consent screen to **Production**; Testing status issues refresh tokens that expire after seven days. Fill in `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REDIRECT_URI`, and `TOKEN_ENCRYPTION_KEY`, then use **Connect YouTube** on the dashboard.
+
+`TOKEN_ENCRYPTION_KEY` must be a base64-encoded 32-byte key (for example, `openssl rand -base64 32`). Tokens are encrypted with AES-256-GCM in SQLite. Store the database volume with restrictive permissions. Key rotation is out of scope for v0.1: changing this key makes existing connections unreadable, so disconnect and reconnect YouTube afterwards.
+
 ## Local development (without Docker)
 
 ```sh

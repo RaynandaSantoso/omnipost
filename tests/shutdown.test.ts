@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -19,6 +19,7 @@ describe("registerShutdownHandlers", () => {
   beforeAll(() => {
     dir = mkdtempSync(path.join(tmpdir(), "omnipost-shutdown-"));
     process.env.DATABASE_URL = `file:${path.join(dir, "test.db")}`;
+    writeFileSync(path.join(dir, "test.db"), "");
 
     execFileSync("npx", ["--no-install", "prisma", "migrate", "deploy"], {
       stdio: "inherit",

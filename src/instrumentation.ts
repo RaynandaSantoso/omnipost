@@ -15,6 +15,15 @@ export async function register() {
     const { ensureSeedUser } = await import("@/lib/db");
     await ensureSeedUser();
 
+    // A database containing credentials without the encryption key is not a
+    // viable instance: fail at boot instead of discovering it mid-upload.
+    const { prisma } = await import("@/lib/db");
+    const connection = await prisma.platformConnection.findFirst();
+    if (connection) {
+      const { assertTokenEncryptionKey } = await import("@/lib/token-crypto");
+      assertTokenEncryptionKey();
+    }
+
     const { registerShutdownHandlers } = await import("@/lib/shutdown");
     registerShutdownHandlers();
 

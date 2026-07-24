@@ -15,6 +15,12 @@ interface UploadView {
   jobs: JobView[];
 }
 
+interface YouTubeConnectionView {
+  connected: boolean;
+  channelId: string | null;
+  reconnectNeeded: boolean;
+}
+
 const STATUS_LABEL: Record<JobView["status"], string> = {
   pending: "Pending",
   uploading: "Uploading",
@@ -30,6 +36,7 @@ export default function Home() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [upload, setUpload] = useState<UploadView | null>(null);
+  const [youtube, setYoutube] = useState<YouTubeConnectionView | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -39,6 +46,20 @@ export default function Home() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    fetch("/api/platforms/youtube")
+      .then(async (response) => (response.ok ? response.json() : null))
+      .then((data: YouTubeConnectionView | null) => setYoutube(data))
+      .catch(() => setYoutube(null));
+  }, []);
+
+  async function disconnectYouTube() {
+    const response = await fetch("/api/platforms/youtube", { method: "DELETE" });
+    if (response.ok) {
+      setYoutube({ connected: false, channelId: null, reconnectNeeded: false });
+    }
+  }
 
   function pollStatus(id: string) {
     if (pollRef.current) {
@@ -103,6 +124,35 @@ export default function Home() {
             Self-hosted upload pipeline.
           </p>
         </div>
+
+        <section className="flex w-full items-center justify-between rounded-md border border-zinc-200 px-4 py-3 text-sm dark:border-zinc-800">
+          <div>
+            <p className="font-medium text-black dark:text-zinc-50">YouTube</p>
+            <p className="text-zinc-600 dark:text-zinc-400">
+              {youtube?.connected
+                ? youtube.reconnectNeeded
+                  ? "Reconnect needed"
+                  : `Connected to ${youtube.channelId}`
+                : "Not connected"}
+            </p>
+          </div>
+          {youtube?.connected ? (
+            <button
+              type="button"
+              onClick={disconnectYouTube}
+              className="rounded-md border border-zinc-300 px-3 py-2 text-black dark:border-zinc-700 dark:text-zinc-50"
+            >
+              Disconnect
+            </button>
+          ) : (
+            <a
+              href="/api/platforms/youtube/connect"
+              className="rounded-md bg-black px-3 py-2 text-white dark:bg-zinc-50 dark:text-black"
+            >
+              Connect YouTube
+            </a>
+          )}
+        </section>
 
         <form onSubmit={handleSubmit} className="flex w-full flex-col gap-4">
           <label

@@ -14,9 +14,44 @@ datasource db {
 // hardcoded constant) so every domain table can carry a user_id and later
 // multi-user support is additive, not a schema rewrite.
 model User {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
-  uploads   Upload[]
+  id                  String               @id @default(cuid())
+  createdAt           DateTime             @default(now())
+  uploads             Upload[]
+  platformConnections PlatformConnection[]
+  oauthStates         OAuthState[]
+}
+
+// A connected platform account. Tokens are AES-256-GCM ciphertexts, never
+// plaintext; the crypto module owns their encoding and decryption.
+model PlatformConnection {
+  id                   String   @id @default(cuid())
+  userId               String
+  user                 User     @relation(fields: [userId], references: [id])
+  platform             String
+  accessTokenEncrypted String
+  refreshTokenEncrypted String
+  accessTokenExpiresAt DateTime
+  channelId            String
+  refreshError         String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([userId, platform])
+}
+
+// Short-lived, server-side OAuth CSRF state. It is consumed atomically by
+// the callback and is bound to the exact redirect URI configured by the
+// operator.
+model OAuthState {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  value       String   @unique
+  redirectUri String
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([expiresAt])
 }
 
 // One user-initiated publish action: the source video plus the shared

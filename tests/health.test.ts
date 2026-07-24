@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -10,6 +10,7 @@ describe("GET /api/health", () => {
   beforeAll(() => {
     dir = mkdtempSync(path.join(tmpdir(), "omnipost-health-"));
     const dbPath = path.join(dir, "test.db");
+    writeFileSync(dbPath, "");
     process.env.DATABASE_URL = `file:${dbPath}`;
 
     // Exercise the real migration files against a throwaway db, same as

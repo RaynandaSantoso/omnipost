@@ -1,5 +1,5 @@
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -14,6 +14,7 @@ describe("runMigrations", () => {
     dir = mkdtempSync(path.join(tmpdir(), "omnipost-migrate-"));
     originalDatabaseUrl = process.env.DATABASE_URL;
     process.env.DATABASE_URL = `file:${path.join(dir, "test.db")}`;
+    writeFileSync(path.join(dir, "test.db"), "");
   });
 
   afterEach(() => {

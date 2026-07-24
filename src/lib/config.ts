@@ -39,6 +39,15 @@ const configSchema = z.object({
   JOB_BACKOFF_MAX_MS: positiveInt("JOB_BACKOFF_MAX_MS").default(
     JOB_POLICY_DEFAULTS.backoffMaxMs,
   ),
+  // OAuth values stay optional until the operator connects YouTube. This
+  // preserves dry-run-only installs, while the OAuth routes name exactly
+  // which configuration is missing when they are used.
+  YOUTUBE_CLIENT_ID: z.string().min(1).optional(),
+  YOUTUBE_CLIENT_SECRET: z.string().min(1).optional(),
+  YOUTUBE_REDIRECT_URI: z.string().url().optional(),
+  // A base64-encoded, 32-byte AES-256-GCM key. Never include the value in a
+  // validation error: config errors name variables, not their secrets.
+  TOKEN_ENCRYPTION_KEY: z.string().optional(),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

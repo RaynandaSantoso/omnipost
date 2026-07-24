@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -31,6 +31,7 @@ describe("POST /api/uploads", () => {
   beforeAll(() => {
     dir = mkdtempSync(path.join(tmpdir(), "omnipost-uploads-"));
     const dbPath = path.join(dir, "test.db");
+    writeFileSync(dbPath, "");
     process.env.DATABASE_URL = `file:${dbPath}`;
 
     execFileSync("npx", ["--no-install", "prisma", "migrate", "deploy"], {
