@@ -19,6 +19,7 @@ export class AdapterFailure extends Error {
 }
 
 export interface UploadMetadata {
+  userId: string;
   title: string;
   description: string;
   filePath: string;

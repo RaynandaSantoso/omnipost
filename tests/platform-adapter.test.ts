@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DryRunAdapter } from "@/lib/adapters/dry-run-adapter";
+import { YouTubeAdapter } from "@/lib/adapters/youtube-adapter";
 import { getAdapter } from "@/lib/adapters/registry";
 
 describe("DryRunAdapter", () => {
@@ -7,9 +8,10 @@ describe("DryRunAdapter", () => {
     const adapter = new DryRunAdapter();
 
     const result = await adapter.upload({
-      title: "My Short",
-      description: "A short clip",
-      filePath: "/tmp/clip.mp4",
+    title: "My Short",
+    description: "A short clip",
+    filePath: "/tmp/clip.mp4",
+    userId: "user-1",
     });
 
     expect(result.url).toBe("dry-run://My%20Short");
@@ -21,9 +23,13 @@ describe("getAdapter", () => {
     expect(getAdapter("dry-run")).toBeInstanceOf(DryRunAdapter);
   });
 
+  it("returns the YouTube adapter for YouTube", () => {
+    expect(getAdapter("youtube")).toBeInstanceOf(YouTubeAdapter);
+  });
+
   it("throws for an unregistered platform", () => {
-    expect(() => getAdapter("youtube")).toThrow(
-      /no adapter registered for platform "youtube"/,
+    expect(() => getAdapter("tiktok")).toThrow(
+      /no adapter registered for platform "tiktok"/,
     );
   });
 });

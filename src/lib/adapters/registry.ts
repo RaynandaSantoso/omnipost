@@ -1,8 +1,10 @@
 import type { PlatformAdapter } from "@/lib/platform-adapter";
 import { DryRunAdapter } from "@/lib/adapters/dry-run-adapter";
+import { YouTubeAdapter } from "@/lib/adapters/youtube-adapter";
 
 const adapters: Record<string, PlatformAdapter> = {
   "dry-run": new DryRunAdapter(),
+  youtube: new YouTubeAdapter(),
 };
 
 export function getAdapter(platform: string): PlatformAdapter {

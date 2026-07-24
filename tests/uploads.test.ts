@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { resetConfigCache } from "@/lib/config";
 
 function uploadRequest(fields: {
   video?: File | null;
@@ -33,6 +34,8 @@ describe("POST /api/uploads", () => {
     const dbPath = path.join(dir, "test.db");
     writeFileSync(dbPath, "");
     process.env.DATABASE_URL = `file:${dbPath}`;
+    process.env.TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString("base64");
+    resetConfigCache();
 
     execFileSync("npx", ["--no-install", "prisma", "migrate", "deploy"], {
       stdio: "inherit",
@@ -71,6 +74,32 @@ describe("POST /api/uploads", () => {
     expect(upload?.fileName).toBe("clip.mp4");
     expect(upload?.jobs).toHaveLength(1);
     expect(upload?.jobs[0].status).toBe("pending");
+  });
+
+  it("targets YouTube when the upload owner has connected YouTube", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const { prisma, ensureSeedUser } = await import("@/lib/db");
+    const { encryptToken } = await import("@/lib/token-crypto");
+    const user = await ensureSeedUser();
+    await prisma.platformConnection.create({
+      data: {
+        userId: user.id,
+        platform: "youtube",
+        accessTokenEncrypted: encryptToken("access"),
+        refreshTokenEncrypted: encryptToken("refresh"),
+        accessTokenExpiresAt: new Date(Date.now() + 60_000),
+        channelId: "channel-123",
+      },
+    });
+
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "My Short",
+      description: "A short clip",
+    }));
+
+    expect(response.status).toBe(201);
+    expect((await response.json()).jobs[0].platform).toBe("youtube");
   });
 
   it("rejects a request with no video file", async () => {

@@ -1,9 +1,16 @@
 import { prisma } from "@/lib/db";
 import { saveUploadFile } from "@/lib/storage";
 
-// v0.1 always fans out to a single dry-run Job. Real platform selection
-// (driven by which PlatformConnections exist) arrives with YouTube OAuth.
-const DEFAULT_PLATFORM = "dry-run";
+// A fresh self-hosted installation stays safely verifiable with dry-run.
+// Once its single owner has connected YouTube, new uploads use the real
+// adapter and therefore publish through that owner’s credentials.
+async function selectedPlatform(userId: string): Promise<"dry-run" | "youtube"> {
+  const connection = await prisma.platformConnection.findUnique({
+    where: { userId_platform: { userId, platform: "youtube" } },
+    select: { id: true },
+  });
+  return connection ? "youtube" : "dry-run";
+}
 
 export async function createUpload(params: {
   userId: string;
@@ -13,6 +20,7 @@ export async function createUpload(params: {
 }) {
   const { userId, title, description, file } = params;
   const { filePath, fileName, fileSize } = await saveUploadFile(file);
+  const platform = await selectedPlatform(userId);
 
   return prisma.upload.create({
     data: {
@@ -23,7 +31,7 @@ export async function createUpload(params: {
       filePath,
       fileSize,
       jobs: {
-        create: [{ platform: DEFAULT_PLATFORM, status: "pending" }],
+        create: [{ platform, status: "pending" }],
       },
     },
     include: { jobs: true },
