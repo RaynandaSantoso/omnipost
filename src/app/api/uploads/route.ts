@@ -1,6 +1,28 @@
 import { NextResponse } from "next/server";
-import { ensureSeedUser } from "@/lib/db";
+import { ensureSeedUser, prisma } from "@/lib/db";
 import { createUpload } from "@/lib/uploads";
+
+export async function GET() {
+  const uploads = await prisma.upload.findMany({
+    include: { jobs: true },
+    orderBy: { createdAt: "desc" },
+  });
+
+  return NextResponse.json(uploads.map((upload) => ({
+    id: upload.id,
+    title: upload.title,
+    description: upload.description,
+    fileName: upload.fileName,
+    createdAt: upload.createdAt,
+    jobs: upload.jobs.map((job) => ({
+      id: job.id,
+      platform: job.platform,
+      status: job.status,
+      resultUrl: job.resultUrl,
+      error: job.error,
+    })),
+  })));
+}
 
 export async function POST(request: Request) {
   const formData = await request.formData();

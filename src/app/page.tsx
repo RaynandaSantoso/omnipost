@@ -12,6 +12,9 @@ interface JobView {
 
 interface UploadView {
   id: string;
+  title?: string;
+  fileName?: string;
+  createdAt?: string;
   jobs: JobView[];
 }
 
@@ -28,6 +31,47 @@ const STATUS_LABEL: Record<JobView["status"], string> = {
   failed: "Failed",
 };
 
+const MAX_FILE_SIZE_BYTES = 256 * 1024 * 1024;
+const MAX_DURATION_SECONDS = 180;
+const SUPPORTED_VIDEO_TYPES = new Set(["video/mp4", "video/webm", "video/quicktime"]);
+
+function typeFor(file: File): string {
+  if (file.type) return file.type;
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  return extension === "mov" ? "video/quicktime" : `video/${extension ?? "unknown"}`;
+}
+
+function readableFailure(error: string): string {
+  if (error.toLowerCase().includes("reconnect")) return "YouTube needs to be reconnected before this upload can continue.";
+  if (error.toLowerCase().includes("credential")) return "YouTube rejected the connected account credentials.";
+  if (error.includes("429")) return "YouTube is rate limiting uploads. It will retry automatically.";
+  return error;
+}
+
+function JobOutcome({
+  job,
+  onRetry,
+  history = false,
+}: {
+  job: JobView;
+  onRetry: () => void;
+  history?: boolean;
+}) {
+  return <>
+    {job.status === "done" && job.resultUrl && (
+      <a href={job.resultUrl} className="truncate text-blue-600 underline dark:text-blue-400">
+        {history ? "View published video" : job.resultUrl}
+      </a>
+    )}
+    {job.status === "failed" && job.error && (
+      <>
+        <span className="text-red-600 dark:text-red-400">{readableFailure(job.error)}</span>
+        <button type="button" onClick={onRetry} className="w-fit rounded border border-zinc-300 px-2 py-1 text-black dark:border-zinc-700 dark:text-zinc-50">Retry</button>
+      </>
+    )}
+  </>;
+}
+
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
@@ -35,7 +79,11 @@ export default function Home() {
   const [dragging, setDragging] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fileIssue, setFileIssue] = useState<string | null>(null);
+  const [checkingFile, setCheckingFile] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [upload, setUpload] = useState<UploadView | null>(null);
+  const [history, setHistory] = useState<UploadView[]>([]);
   const [youtube, setYoutube] = useState<YouTubeConnectionView | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -45,6 +93,13 @@ export default function Home() {
         clearInterval(pollRef.current);
       }
     };
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/uploads")
+      .then(async (response) => (response.ok ? response.json() : []))
+      .then((data: UploadView[]) => setHistory(data))
+      .catch(() => setHistory([]));
   }, []);
 
   useEffect(() => {
@@ -72,6 +127,7 @@ export default function Home() {
       }
       const data: UploadView = await response.json();
       setUpload(data);
+      setHistory((current) => current.map((item) => item.id === data.id ? data : item));
       const settled = data.jobs.every(
         (job) => job.status === "done" || job.status === "failed",
       );
@@ -82,35 +138,93 @@ export default function Home() {
     }, 1000);
   }
 
+  async function selectFile(candidate: File) {
+    setFile(candidate);
+    setError(null);
+    setCheckingFile(false);
+    if (!SUPPORTED_VIDEO_TYPES.has(typeFor(candidate))) {
+      setFileIssue("Use an MP4, WebM, or MOV video file.");
+      return;
+    }
+    if (candidate.size > MAX_FILE_SIZE_BYTES) {
+      setFileIssue("Use a video smaller than 256 MB.");
+      return;
+    }
+
+    setCheckingFile(true);
+    const url = URL.createObjectURL(candidate);
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      URL.revokeObjectURL(url);
+      setFileIssue(video.duration > MAX_DURATION_SECONDS ? "Use a video three minutes or shorter." : null);
+      setCheckingFile(false);
+    };
+    video.onerror = () => {
+      URL.revokeObjectURL(url);
+      setFileIssue("This video could not be checked. Choose an MP4, WebM, or MOV file.");
+      setCheckingFile(false);
+    };
+    video.src = url;
+  }
+
+  function sendUpload(body: FormData): Promise<UploadView> {
+    return new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open("POST", "/api/uploads");
+      request.upload.onprogress = (event) => {
+        if (event.lengthComputable) setUploadProgress(Math.round((event.loaded / event.total) * 100));
+      };
+      request.onerror = () => reject(new Error("Upload could not reach OmniPost."));
+      request.onload = () => {
+        const data = JSON.parse(request.responseText || "{}");
+        if (request.status >= 200 && request.status < 300) resolve(data as UploadView);
+        else reject(new Error(typeof data.error === "string" ? data.error : "Upload failed."));
+      };
+      request.send(body);
+    });
+  }
+
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
-    if (!file) {
+    if (!file || fileIssue || checkingFile) {
       return;
     }
 
     setSubmitting(true);
     setError(null);
     setUpload(null);
+    setUploadProgress(0);
 
     const body = new FormData();
     body.set("video", file);
     body.set("title", title);
     body.set("description", description);
 
-    const response = await fetch("/api/uploads", { method: "POST", body });
-    setSubmitting(false);
-
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      setError(
-        typeof data.error === "string" ? data.error : "Upload failed.",
-      );
-      return;
+    try {
+      const data = await sendUpload(body);
+      setUpload(data);
+      setHistory((current) => [data, ...current.filter((item) => item.id !== data.id)]);
+      pollStatus(data.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Upload failed.");
+    } finally {
+      setSubmitting(false);
+      setUploadProgress(null);
     }
+  }
 
-    const data: UploadView = await response.json();
-    setUpload(data);
-    pollStatus(data.id);
+  async function retryJob(jobId: string, source: UploadView = upload!) {
+    const response = await fetch(`/api/jobs/${jobId}/retry`, { method: "POST" });
+    if (!response.ok || !source) return;
+    const retried: Pick<JobView, "id" | "status" | "error"> = await response.json();
+    const updated = {
+      ...source,
+      jobs: source.jobs.map((job) => job.id === retried.id ? { ...job, ...retried } : job),
+    };
+    setUpload(updated);
+    setHistory((current) => current.map((item) => item.id === updated.id ? updated : item));
+    pollStatus(updated.id);
   }
 
   return (
@@ -166,7 +280,7 @@ export default function Home() {
               setDragging(false);
               const dropped = event.dataTransfer.files[0];
               if (dropped) {
-                setFile(dropped);
+                void selectFile(dropped);
               }
             }}
             className={`flex cursor-pointer flex-col items-center gap-1 rounded-md border-2 border-dashed px-4 py-8 text-center text-sm transition-colors ${
@@ -179,7 +293,10 @@ export default function Home() {
               type="file"
               accept="video/*"
               className="hidden"
-              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+              onChange={(event) => {
+                const selected = event.target.files?.[0];
+                if (selected) void selectFile(selected);
+              }}
             />
             {file ? (
               <span className="text-black dark:text-zinc-50">
@@ -212,10 +329,20 @@ export default function Home() {
           {error && (
             <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
           )}
+          {fileIssue && (
+            <p className="text-sm text-amber-700 dark:text-amber-300">{fileIssue}</p>
+          )}
+
+          {submitting && uploadProgress !== null && (
+            <div className="flex flex-col gap-1 text-sm text-zinc-600 dark:text-zinc-400">
+              <div className="flex justify-between"><span>Sending video</span><span>{uploadProgress}%</span></div>
+              <div className="h-2 overflow-hidden rounded bg-zinc-200 dark:bg-zinc-800"><div className="h-full bg-black transition-all dark:bg-zinc-50" style={{ width: `${uploadProgress}%` }} /></div>
+            </div>
+          )}
 
           <button
             type="submit"
-            disabled={submitting || !file || title.trim().length === 0}
+            disabled={submitting || checkingFile || !file || Boolean(fileIssue) || title.trim().length === 0}
             className="rounded-md bg-black px-3 py-2 text-white disabled:opacity-50 dark:bg-zinc-50 dark:text-black"
           >
             {submitting ? "Uploading..." : "Upload"}
@@ -234,23 +361,28 @@ export default function Home() {
                     {STATUS_LABEL[job.status]}
                   </span>
                 </div>
-                {job.status === "done" && job.resultUrl && (
-                  <a
-                    href={job.resultUrl}
-                    className="truncate text-blue-600 underline dark:text-blue-400"
-                  >
-                    {job.resultUrl}
-                  </a>
-                )}
-                {job.status === "failed" && job.error && (
-                  <span className="text-red-600 dark:text-red-400">
-                    {job.error}
-                  </span>
-                )}
+                <JobOutcome job={job} onRetry={() => retryJob(job.id)} />
               </div>
             ))}
           </div>
         )}
+
+        <section className="flex w-full flex-col gap-3">
+          <h2 className="text-lg font-medium text-black dark:text-zinc-50">Upload history</h2>
+          {history.length === 0 ? (
+            <p className="text-sm text-zinc-600 dark:text-zinc-400">No uploads yet.</p>
+          ) : history.map((item) => (
+            <div key={item.id} className="rounded-md border border-zinc-200 px-4 py-3 text-sm dark:border-zinc-800">
+              <div className="flex justify-between gap-3"><span className="truncate font-medium text-black dark:text-zinc-50">{item.title ?? item.fileName ?? "Upload"}</span><time className="shrink-0 text-zinc-600 dark:text-zinc-400">{item.createdAt ? new Date(item.createdAt).toLocaleString() : "Just now"}</time></div>
+              {item.jobs.map((job) => (
+                <div key={job.id} className="mt-2 flex flex-col gap-1">
+                  <div className="flex justify-between"><span className="text-zinc-600 dark:text-zinc-400">{job.platform}</span><span className="text-black dark:text-zinc-50">{STATUS_LABEL[job.status]}</span></div>
+                  <JobOutcome job={job} onRetry={() => retryJob(job.id, item)} history />
+                </div>
+              ))}
+            </div>
+          ))}
+        </section>
       </main>
     </div>
   );
