@@ -1,3 +1,5 @@
+import type { Platform } from "@/lib/platform";
+
 // Contract every platform integration implements. The job engine depends
 // only on this — nothing about the pipeline (schema, endpoints, runner)
 // knows YouTube, TikTok, or Instagram exist.
@@ -30,6 +32,6 @@ export interface UploadResult {
 }
 
 export interface PlatformAdapter {
-  readonly platform: string;
+  readonly platform: Platform;
   upload(metadata: UploadMetadata): Promise<UploadResult>;
 }

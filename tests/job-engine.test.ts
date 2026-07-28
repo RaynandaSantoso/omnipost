@@ -36,7 +36,7 @@ function fakeClock(start = new Date("2026-01-01T00:00:00.000Z")) {
 function adapterOf(
   upload: (metadata: UploadMetadata) => Promise<UploadResult>,
 ): PlatformAdapter {
-  return { platform: "test", upload };
+  return { platform: "dry-run", upload };
 }
 
 describe("job engine", () => {

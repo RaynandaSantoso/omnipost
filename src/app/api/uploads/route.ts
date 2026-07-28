@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ensureSeedUser, prisma } from "@/lib/db";
 import { createUpload } from "@/lib/uploads";
+import { platformSchema, type Platform } from "@/lib/platform";
 import { logError } from "@/lib/log";
 
 export async function GET() {
@@ -65,9 +66,25 @@ export async function POST(request: Request) {
     );
   }
 
+  const platformField = formData.get("platform");
+  let platform: Platform | undefined;
+  if (platformField !== null) {
+    if (typeof platformField !== "string") {
+      return NextResponse.json({ error: "platform must be a string" }, { status: 400 });
+    }
+    const parsed = platformSchema.safeParse(platformField);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: `unsupported platform "${platformField}"` },
+        { status: 400 },
+      );
+    }
+    platform = parsed.data;
+  }
+
   try {
     const user = await ensureSeedUser();
-    const upload = await createUpload({ userId: user.id, title, description, file });
+    const upload = await createUpload({ userId: user.id, title, description, file, platform });
 
     return NextResponse.json(
       {

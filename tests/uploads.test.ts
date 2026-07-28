@@ -9,6 +9,7 @@ function uploadRequest(fields: {
   video?: File | null;
   title?: string;
   description?: string;
+  platform?: string;
 }) {
   const body = new FormData();
   if (fields.video !== undefined && fields.video !== null) {
@@ -19,6 +20,9 @@ function uploadRequest(fields: {
   }
   if (fields.description !== undefined) {
     body.set("description", fields.description);
+  }
+  if (fields.platform !== undefined) {
+    body.set("platform", fields.platform);
   }
   return new Request("http://localhost/api/uploads", {
     method: "POST",
@@ -100,6 +104,37 @@ describe("POST /api/uploads", () => {
 
     expect(response.status).toBe(201);
     expect((await response.json()).jobs[0].platform).toBe("youtube");
+  });
+
+  it("rejects an unregistered platform with a 400 naming the invalid value, before creating anything", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const { prisma } = await import("@/lib/db");
+    const countBefore = await prisma.upload.count();
+
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "My Short",
+      description: "A short clip",
+      platform: "tiktok",
+    }));
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain("tiktok");
+    await expect(prisma.upload.count()).resolves.toBe(countBefore);
+  });
+
+  it("honors an explicit, registered platform instead of auto-selecting", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "My Short",
+      description: "A short clip",
+      platform: "dry-run",
+    }));
+
+    expect(response.status).toBe(201);
+    expect((await response.json()).jobs[0].platform).toBe("dry-run");
   });
 
   it("rejects a request with no video file", async () => {
