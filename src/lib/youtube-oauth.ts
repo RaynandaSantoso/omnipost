@@ -1,11 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { getConfig } from "@/lib/config";
 import { prisma } from "@/lib/db";
+import { logError } from "@/lib/log";
 import { decryptToken, encryptToken } from "@/lib/token-crypto";
 
 const AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
-const CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels?part=id&mine=true";
+const CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels?part=id,snippet&mine=true";
 const STATE_TTL_MS = 10 * 60 * 1000;
 export const YOUTUBE_PLATFORM = "youtube";
 
@@ -29,6 +30,16 @@ function getValidatedYouTubeOAuthConfig() {
 
 async function json(response: Response): Promise<unknown> {
   return response.json().catch(() => null);
+}
+
+async function fetchYouTubeChannel(accessToken: string): Promise<{ id: string; title: string | null } | null> {
+  const response = await fetch(CHANNELS_URL, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const channels = (await json(response)) as {
+    items?: Array<{ id?: string; snippet?: { title?: string } }>;
+  } | null;
+  const id = channels?.items?.[0]?.id;
+  if (!response.ok || !id) return null;
+  return { id, title: channels?.items?.[0]?.snippet?.title ?? null };
 }
 
 export async function startYouTubeConnect(userId: string): Promise<string> {
@@ -93,14 +104,12 @@ export async function completeYouTubeConnect(requestUrl: string, code: string, s
   if (!tokenResponse.ok || !tokens?.access_token || !tokens.refresh_token || !tokens.expires_in) {
     throw new Error("Google could not complete the YouTube connection");
   }
-  const channelResponse = await fetch(CHANNELS_URL, {
-    headers: { Authorization: `Bearer ${tokens.access_token}` },
-  });
-  const channels = (await json(channelResponse)) as { items?: Array<{ id?: string }> } | null;
-  const channelId = channels?.items?.[0]?.id;
-  if (!channelResponse.ok || !channelId) {
+  const channel = await fetchYouTubeChannel(tokens.access_token);
+  if (!channel) {
     throw new Error("Google did not return a YouTube channel for this account");
   }
+  const channelId = channel.id;
+  const channelTitle = channel.title;
 
   await prisma.platformConnection.upsert({
     where: { userId_platform: { userId: saved.userId, platform: YOUTUBE_PLATFORM } },
@@ -110,13 +119,15 @@ export async function completeYouTubeConnect(requestUrl: string, code: string, s
       accessTokenEncrypted: encryptToken(tokens.access_token),
       refreshTokenEncrypted: encryptToken(tokens.refresh_token),
       accessTokenExpiresAt: new Date(Date.now() + tokens.expires_in * 1000),
-      channelId,
+      externalAccountId: channelId,
+      externalAccountLabel: channelTitle,
     },
     update: {
       accessTokenEncrypted: encryptToken(tokens.access_token),
       refreshTokenEncrypted: encryptToken(tokens.refresh_token),
       accessTokenExpiresAt: new Date(Date.now() + tokens.expires_in * 1000),
-      channelId,
+      externalAccountId: channelId,
+      externalAccountLabel: channelTitle,
       refreshError: null,
     },
   });
@@ -127,8 +138,13 @@ export async function youtubeConnectionStatus(userId: string) {
     where: { userId_platform: { userId, platform: YOUTUBE_PLATFORM } },
   });
   return connection
-    ? { connected: true, channelId: connection.channelId, reconnectNeeded: Boolean(connection.refreshError) }
-    : { connected: false, channelId: null, reconnectNeeded: false };
+    ? {
+        connected: true,
+        externalAccountId: connection.externalAccountId,
+        externalAccountLabel: connection.externalAccountLabel,
+        reconnectNeeded: Boolean(connection.refreshError),
+      }
+    : { connected: false, externalAccountId: null, externalAccountLabel: null, reconnectNeeded: false };
 }
 
 export async function disconnectYouTube(userId: string): Promise<void> {
@@ -174,4 +190,31 @@ export async function accessTokenForYouTube(userId: string): Promise<string> {
     },
   });
   return refreshed.access_token;
+}
+
+// One-off startup task: connections created before externalAccountLabel
+// existed have no label, only the opaque channel id. Re-fetches the label
+// for each of them using its already-stored token (refreshing it first if
+// expired, same as an upload would) rather than a manual SQL edit. A
+// failure on one connection (e.g. Google unreachable) must not stop the
+// others or block boot.
+export async function backfillExternalAccountLabels(): Promise<void> {
+  const connections = await prisma.platformConnection.findMany({
+    where: { platform: YOUTUBE_PLATFORM, externalAccountLabel: null },
+  });
+  for (const connection of connections) {
+    try {
+      const accessToken = await accessTokenForYouTube(connection.userId);
+      const channel = await fetchYouTubeChannel(accessToken);
+      if (!channel?.title) {
+        throw new Error("Google did not return a channel title to backfill");
+      }
+      await prisma.platformConnection.update({
+        where: { id: connection.id },
+        data: { externalAccountLabel: channel.title },
+      });
+    } catch (error) {
+      logError("youtube-oauth.backfillExternalAccountLabels", error);
+    }
+  }
 }

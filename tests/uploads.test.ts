@@ -88,7 +88,7 @@ describe("POST /api/uploads", () => {
         accessTokenEncrypted: encryptToken("access"),
         refreshTokenEncrypted: encryptToken("refresh"),
         accessTokenExpiresAt: new Date(Date.now() + 60_000),
-        channelId: "channel-123",
+        externalAccountId: "channel-123",
       },
     });
 

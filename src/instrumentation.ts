@@ -24,6 +24,13 @@ export async function register() {
       assertTokenEncryptionKey();
     }
 
+    // One-off backfill for connections created before externalAccountLabel
+    // existed. Runs every boot but is a no-op once every connection has a
+    // label, so it's cheap to leave in place rather than tracking "has this
+    // run before" separately.
+    const { backfillExternalAccountLabels } = await import("@/lib/youtube-oauth");
+    await backfillExternalAccountLabels();
+
     const { registerShutdownHandlers } = await import("@/lib/shutdown");
     registerShutdownHandlers();
 

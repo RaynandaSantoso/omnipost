@@ -20,7 +20,8 @@ interface UploadView {
 
 interface YouTubeConnectionView {
   connected: boolean;
-  channelId: string | null;
+  externalAccountId: string | null;
+  externalAccountLabel: string | null;
   reconnectNeeded: boolean;
 }
 
@@ -39,6 +40,12 @@ function typeFor(file: File): string {
   if (file.type) return file.type;
   const extension = file.name.split(".").pop()?.toLowerCase();
   return extension === "mov" ? "video/quicktime" : `video/${extension ?? "unknown"}`;
+}
+
+export function youtubeConnectionStatusText(youtube: YouTubeConnectionView | null): string {
+  if (!youtube?.connected) return "Not connected";
+  if (youtube.reconnectNeeded) return "Reconnect needed";
+  return `Connected to ${youtube.externalAccountLabel ?? youtube.externalAccountId}`;
 }
 
 function readableFailure(error: string): string {
@@ -86,6 +93,11 @@ export default function Home() {
   const [history, setHistory] = useState<UploadView[]>([]);
   const [youtube, setYoutube] = useState<YouTubeConnectionView | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // React state (`submitting`) drives the disabled attribute, but a state
+  // update isn't applied to the DOM synchronously — a fast double-click can
+  // fire two submit events before the button actually disables. This ref is
+  // checked and set synchronously, so the second call always bails.
+  const submitLockRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -112,7 +124,7 @@ export default function Home() {
   async function disconnectYouTube() {
     const response = await fetch("/api/platforms/youtube", { method: "DELETE" });
     if (response.ok) {
-      setYoutube({ connected: false, channelId: null, reconnectNeeded: false });
+      setYoutube({ connected: false, externalAccountId: null, externalAccountLabel: null, reconnectNeeded: false });
     }
   }
 
@@ -197,9 +209,10 @@ export default function Home() {
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
-    if (!file || fileIssue || checkingFile) {
+    if (!file || fileIssue || checkingFile || submitLockRef.current) {
       return;
     }
+    submitLockRef.current = true;
 
     setSubmitting(true);
     setError(null);
@@ -219,6 +232,7 @@ export default function Home() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Upload failed.");
     } finally {
+      submitLockRef.current = false;
       setSubmitting(false);
       setUploadProgress(null);
     }
@@ -253,11 +267,7 @@ export default function Home() {
           <div>
             <p className="font-medium text-black dark:text-zinc-50">YouTube</p>
             <p className="text-zinc-600 dark:text-zinc-400">
-              {youtube?.connected
-                ? youtube.reconnectNeeded
-                  ? "Reconnect needed"
-                  : `Connected to ${youtube.channelId}`
-                : "Not connected"}
+              {youtubeConnectionStatusText(youtube)}
             </p>
           </div>
           {youtube?.connected ? (
@@ -361,6 +371,9 @@ export default function Home() {
 
         {upload && (
           <div className="w-full rounded-md border border-zinc-200 px-4 py-3 text-sm dark:border-zinc-800">
+            {upload.jobs.length > 0 && upload.jobs.every((job) => job.status === "done") && (
+              <p className="mb-2 font-medium text-green-700 dark:text-green-400">Uploaded successfully.</p>
+            )}
             {upload.jobs.map((job) => (
               <div key={job.id} className="flex flex-col gap-1">
                 <div className="flex items-center justify-between">

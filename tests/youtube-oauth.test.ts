@@ -62,7 +62,9 @@ describe("YouTube OAuth routes", () => {
             expires_in: 3600,
           }),
         )
-        .mockResolvedValueOnce(Response.json({ items: [{ id: "channel-123" }] })),
+        .mockResolvedValueOnce(
+          Response.json({ items: [{ id: "channel-123", snippet: { title: "My Channel" } }] }),
+        ),
     );
 
     const completed = await callback(
@@ -74,7 +76,8 @@ describe("YouTube OAuth routes", () => {
     expect(completed.status).toBe(307);
     expect(completed.headers.get("location")).toBe("http://localhost/?youtube=connected");
     const connection = await prisma.platformConnection.findFirstOrThrow();
-    expect(connection.channelId).toBe("channel-123");
+    expect(connection.externalAccountId).toBe("channel-123");
+    expect(connection.externalAccountLabel).toBe("My Channel");
     expect(connection.accessTokenEncrypted).not.toContain("plain-access-token");
     expect(connection.refreshTokenEncrypted).not.toContain("plain-refresh-token");
   });
@@ -146,19 +149,22 @@ describe("YouTube OAuth routes", () => {
         accessTokenEncrypted: encryptToken("access"),
         refreshTokenEncrypted: encryptToken("refresh"),
         accessTokenExpiresAt: new Date(Date.now() + 60_000),
-        channelId: "my-channel",
+        externalAccountId: "my-channel",
+        externalAccountLabel: "My Channel",
       },
     });
 
     expect(await (await GET()).json()).toEqual({
       connected: true,
-      channelId: "my-channel",
+      externalAccountId: "my-channel",
+      externalAccountLabel: "My Channel",
       reconnectNeeded: false,
     });
     expect((await DELETE()).status).toBe(204);
     expect(await (await GET()).json()).toEqual({
       connected: false,
-      channelId: null,
+      externalAccountId: null,
+      externalAccountLabel: null,
       reconnectNeeded: false,
     });
   });
@@ -175,7 +181,7 @@ describe("YouTube OAuth routes", () => {
         accessTokenEncrypted: encryptToken("expired-access"),
         refreshTokenEncrypted: encryptToken("old-refresh"),
         accessTokenExpiresAt: new Date(Date.now() - 1),
-        channelId: "my-channel",
+        externalAccountId: "my-channel",
       },
     });
     vi.stubGlobal(
@@ -201,7 +207,7 @@ describe("YouTube OAuth routes", () => {
         accessTokenEncrypted: encryptToken("expired-access"),
         refreshTokenEncrypted: encryptToken("old-refresh"),
         accessTokenExpiresAt: new Date(Date.now() - 1),
-        channelId: "my-channel",
+        externalAccountId: "my-channel",
       },
     });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 401 })));
@@ -209,9 +215,63 @@ describe("YouTube OAuth routes", () => {
     await expect(accessTokenForYouTube(user.id)).rejects.toThrow("reconnecting");
     await expect(youtubeConnectionStatus(user.id)).resolves.toEqual({
       connected: true,
-      channelId: "my-channel",
+      externalAccountId: "my-channel",
+      externalAccountLabel: null,
       reconnectNeeded: true,
     });
+  });
+
+  it("backfills externalAccountLabel for a connection that has none, without touching the tokens", async () => {
+    const { prisma, ensureSeedUser } = await import("@/lib/db");
+    const { encryptToken } = await import("@/lib/token-crypto");
+    const { backfillExternalAccountLabels } = await import("@/lib/youtube-oauth");
+    const user = await ensureSeedUser();
+    const accessTokenEncrypted = encryptToken("still-valid-access");
+    const refreshTokenEncrypted = encryptToken("still-valid-refresh");
+    const connection = await prisma.platformConnection.create({
+      data: {
+        userId: user.id,
+        platform: "youtube",
+        accessTokenEncrypted,
+        refreshTokenEncrypted,
+        accessTokenExpiresAt: new Date(Date.now() + 60_000),
+        externalAccountId: "my-channel",
+      },
+    });
+    const fetch = vi.fn().mockResolvedValue(
+      Response.json({ items: [{ id: "my-channel", snippet: { title: "Backfilled Channel" } }] }),
+    );
+    vi.stubGlobal("fetch", fetch);
+
+    await backfillExternalAccountLabels();
+
+    const updated = await prisma.platformConnection.findUniqueOrThrow({ where: { id: connection.id } });
+    expect(updated.externalAccountLabel).toBe("Backfilled Channel");
+    expect(updated.accessTokenEncrypted).toBe(accessTokenEncrypted);
+    expect(updated.refreshTokenEncrypted).toBe(refreshTokenEncrypted);
+  });
+
+  it("skips connections that already have a label and doesn't fail the batch when one connection errors", async () => {
+    const { prisma, ensureSeedUser } = await import("@/lib/db");
+    const { encryptToken } = await import("@/lib/token-crypto");
+    const { backfillExternalAccountLabels } = await import("@/lib/youtube-oauth");
+    const user = await ensureSeedUser();
+    await prisma.platformConnection.create({
+      data: {
+        userId: user.id,
+        platform: "youtube",
+        accessTokenEncrypted: encryptToken("access"),
+        refreshTokenEncrypted: encryptToken("refresh"),
+        accessTokenExpiresAt: new Date(Date.now() + 60_000),
+        externalAccountId: "already-labeled-channel",
+        externalAccountLabel: "Already Labeled",
+      },
+    });
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(backfillExternalAccountLabels()).resolves.toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("never logs OAuth tokens or the encryption key while connecting", async () => {
@@ -247,7 +307,7 @@ describe("YouTube OAuth routes", () => {
         accessTokenEncrypted: encryptToken("access"),
         refreshTokenEncrypted: encryptToken("refresh"),
         accessTokenExpiresAt: new Date(Date.now() + 60_000),
-        channelId: "my-channel",
+        externalAccountId: "my-channel",
       },
     });
     const key = process.env.TOKEN_ENCRYPTION_KEY;

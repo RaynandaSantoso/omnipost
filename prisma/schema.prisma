@@ -31,7 +31,8 @@ model PlatformConnection {
   accessTokenEncrypted String
   refreshTokenEncrypted String
   accessTokenExpiresAt DateTime
-  channelId            String
+  externalAccountId    String
+  externalAccountLabel String?
   refreshError         String?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt

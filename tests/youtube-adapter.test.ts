@@ -56,7 +56,7 @@ describe("YouTubeAdapter", () => {
         accessTokenEncrypted: encryptToken("access-token"),
         refreshTokenEncrypted: encryptToken("refresh-token"),
         accessTokenExpiresAt: expiresAt,
-        channelId: "channel-123",
+        externalAccountId: "channel-123",
       },
     });
     return user;
