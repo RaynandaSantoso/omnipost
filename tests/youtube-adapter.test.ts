@@ -71,7 +71,7 @@ describe("YouTubeAdapter", () => {
         expect(new URL(request.url).searchParams.get("uploadType")).toBe("resumable");
         await expect(request.json()).resolves.toEqual({
           snippet: { title: "My Short", description: "A short clip" },
-          status: { privacyStatus: "private", selfDeclaredMadeForKids: false },
+          status: { privacyStatus: "public", selfDeclaredMadeForKids: false },
         });
         resumableUrl = "https://upload.youtube.test/session/1";
         return new HttpResponse(null, { status: 200, headers: { Location: resumableUrl } });

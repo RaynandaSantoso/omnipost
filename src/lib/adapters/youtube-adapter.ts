@@ -48,7 +48,7 @@ export class YouTubeAdapter implements PlatformAdapter {
         },
         body: JSON.stringify({
           snippet: { title: metadata.title, description: metadata.description },
-          status: { privacyStatus: "private", selfDeclaredMadeForKids: false },
+          status: { privacyStatus: "public", selfDeclaredMadeForKids: false },
         }),
       });
     } catch {
