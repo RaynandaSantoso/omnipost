@@ -177,9 +177,19 @@ export default function Home() {
       };
       request.onerror = () => reject(new Error("Upload could not reach OmniPost."));
       request.onload = () => {
-        const data = JSON.parse(request.responseText || "{}");
+        let data: { error?: unknown; requestId?: unknown } = {};
+        try {
+          data = JSON.parse(request.responseText || "{}");
+        } catch {
+          // Response wasn't JSON (e.g. a proxy-level error page) — fall
+          // through to the generic message below.
+        }
         if (request.status >= 200 && request.status < 300) resolve(data as UploadView);
-        else reject(new Error(typeof data.error === "string" ? data.error : "Upload failed."));
+        else {
+          const base = typeof data.error === "string" ? data.error : "Upload failed.";
+          const suffix = typeof data.requestId === "string" ? ` (ref ${data.requestId} — see server log)` : "";
+          reject(new Error(base + suffix));
+        }
       };
       request.send(body);
     });

@@ -8,6 +8,7 @@ import {
   type UploadMetadata,
 } from "@/lib/platform-adapter";
 import { JOB_POLICY_DEFAULTS, type JobPolicy } from "@/lib/job-policy";
+import { logError } from "@/lib/log";
 import { JOB_STATUS } from "@/lib/job-status";
 
 // The durable job engine. Jobs are rows in SQLite and the database is the
@@ -146,7 +147,7 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
       updateHeldJob(job.id, lease, {
         leaseExpiresAt: new Date(clock.now().getTime() + leaseMs),
       }).catch((error) => {
-        console.error("job heartbeat failed", error);
+        logError("job-engine.heartbeat", error);
       });
     }, heartbeatMs);
     // The heartbeat must never be the reason a process stays alive.

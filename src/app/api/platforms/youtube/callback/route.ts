@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { completeYouTubeConnect } from "@/lib/youtube-oauth";
+import { logError } from "@/lib/log";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -10,8 +11,9 @@ export async function GET(request: Request) {
     await completeYouTubeConnect(request.url, code, state);
     return NextResponse.redirect(new URL("/?youtube=connected", url));
   } catch (error) {
+    const requestId = logError("platforms/youtube/callback", error);
     const message = error instanceof Error ? error.message : "Unable to connect YouTube";
     const status = /state|redirect URI/i.test(message) ? 400 : 502;
-    return NextResponse.json({ error: message }, { status });
+    return NextResponse.json({ error: message, requestId }, { status });
   }
 }

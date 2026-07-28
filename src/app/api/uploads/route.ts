@@ -1,31 +1,47 @@
 import { NextResponse } from "next/server";
 import { ensureSeedUser, prisma } from "@/lib/db";
 import { createUpload } from "@/lib/uploads";
+import { logError } from "@/lib/log";
 
 export async function GET() {
-  const uploads = await prisma.upload.findMany({
-    include: { jobs: true },
-    orderBy: { createdAt: "desc" },
-  });
+  try {
+    const uploads = await prisma.upload.findMany({
+      include: { jobs: true },
+      orderBy: { createdAt: "desc" },
+    });
 
-  return NextResponse.json(uploads.map((upload) => ({
-    id: upload.id,
-    title: upload.title,
-    description: upload.description,
-    fileName: upload.fileName,
-    createdAt: upload.createdAt,
-    jobs: upload.jobs.map((job) => ({
-      id: job.id,
-      platform: job.platform,
-      status: job.status,
-      resultUrl: job.resultUrl,
-      error: job.error,
-    })),
-  })));
+    return NextResponse.json(uploads.map((upload) => ({
+      id: upload.id,
+      title: upload.title,
+      description: upload.description,
+      fileName: upload.fileName,
+      createdAt: upload.createdAt,
+      jobs: upload.jobs.map((job) => ({
+        id: job.id,
+        platform: job.platform,
+        status: job.status,
+        resultUrl: job.resultUrl,
+        error: job.error,
+      })),
+    })));
+  } catch (error) {
+    const requestId = logError("uploads.GET", error);
+    return NextResponse.json({ error: "could not list uploads", requestId }, { status: 500 });
+  }
 }
 
 export async function POST(request: Request) {
-  const formData = await request.formData();
+  let formData: FormData;
+  try {
+    formData = await request.formData();
+  } catch (error) {
+    const requestId = logError("uploads.POST.parse", error);
+    return NextResponse.json(
+      { error: "the upload request body could not be read — the file may exceed the configured size limit", requestId },
+      { status: 400 },
+    );
+  }
+
   const file = formData.get("video");
   const title = formData.get("title");
   const description = formData.get("description");
@@ -49,20 +65,25 @@ export async function POST(request: Request) {
     );
   }
 
-  const user = await ensureSeedUser();
-  const upload = await createUpload({ userId: user.id, title, description, file });
+  try {
+    const user = await ensureSeedUser();
+    const upload = await createUpload({ userId: user.id, title, description, file });
 
-  return NextResponse.json(
-    {
-      id: upload.id,
-      jobs: upload.jobs.map((job) => ({
-        id: job.id,
-        platform: job.platform,
-        status: job.status,
-        resultUrl: job.resultUrl,
-        error: job.error,
-      })),
-    },
-    { status: 201 },
-  );
+    return NextResponse.json(
+      {
+        id: upload.id,
+        jobs: upload.jobs.map((job) => ({
+          id: job.id,
+          platform: job.platform,
+          status: job.status,
+          resultUrl: job.resultUrl,
+          error: job.error,
+        })),
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    const requestId = logError("uploads.POST", error);
+    return NextResponse.json({ error: "the upload could not be created", requestId }, { status: 500 });
+  }
 }

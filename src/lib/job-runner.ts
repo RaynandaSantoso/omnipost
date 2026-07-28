@@ -1,5 +1,6 @@
 import { getConfig } from "@/lib/config";
 import { createJobEngine, type JobEngine } from "@/lib/job-engine";
+import { logError } from "@/lib/log";
 
 // Process-level lifecycle around the job engine: one engine per server
 // instance, ticked on an interval. All the durability behaviour (leases,
@@ -61,7 +62,7 @@ export function startJobRunner(intervalMs = 1000): void {
     ticking = true;
     processPendingJobs()
       .catch((error) => {
-        console.error("job runner tick failed", error);
+        logError("job-runner.tick", error);
       })
       .finally(() => {
         ticking = false;
