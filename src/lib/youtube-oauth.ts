@@ -50,7 +50,7 @@ export async function startYouTubeConnect(userId: string): Promise<string> {
     client_id: config.YOUTUBE_CLIENT_ID,
     redirect_uri: config.YOUTUBE_REDIRECT_URI,
     response_type: "code",
-    scope: "https://www.googleapis.com/auth/youtube.upload",
+    scope: "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly",
     access_type: "offline",
     prompt: "consent",
     state,
