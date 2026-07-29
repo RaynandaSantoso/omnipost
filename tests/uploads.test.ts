@@ -80,7 +80,7 @@ describe("POST /api/uploads", () => {
     expect(upload?.jobs[0].status).toBe("pending");
   });
 
-  it("targets YouTube when the upload owner has connected YouTube", async () => {
+  it("fans out to every connected platform", async () => {
     const { POST } = await import("@/app/api/uploads/route");
     const { prisma, ensureSeedUser } = await import("@/lib/db");
     const { encryptToken } = await import("@/lib/token-crypto");
@@ -95,6 +95,16 @@ describe("POST /api/uploads", () => {
         externalAccountId: "channel-123",
       },
     });
+    await prisma.platformConnection.create({
+      data: {
+        userId: user.id,
+        platform: "tiktok",
+        accessTokenEncrypted: encryptToken("access"),
+        refreshTokenEncrypted: encryptToken("refresh"),
+        accessTokenExpiresAt: new Date(Date.now() + 60_000),
+        externalAccountId: "open-id-123",
+      },
+    });
 
     const response = await POST(uploadRequest({
       video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
@@ -103,7 +113,8 @@ describe("POST /api/uploads", () => {
     }));
 
     expect(response.status).toBe(201);
-    expect((await response.json()).jobs[0].platform).toBe("youtube");
+    expect((await response.json()).jobs.map((job: { platform: string }) => job.platform).sort())
+      .toEqual(["tiktok", "youtube"]);
   });
 
   it("rejects an unregistered platform with a 400 naming the invalid value, before creating anything", async () => {
@@ -115,11 +126,11 @@ describe("POST /api/uploads", () => {
       video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
       title: "My Short",
       description: "A short clip",
-      platform: "tiktok",
+      platform: "instagram",
     }));
 
     expect(response.status).toBe(400);
-    expect((await response.json()).error).toContain("tiktok");
+    expect((await response.json()).error).toContain("instagram");
     await expect(prisma.upload.count()).resolves.toBe(countBefore);
   });
 

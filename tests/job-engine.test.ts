@@ -106,6 +106,30 @@ describe("job engine", () => {
     expect(job.attempts).toBe(1);
   });
 
+  it("finishes one platform job when another platform job fails", async () => {
+    const { createJobEngine } = await import("@/lib/job-engine");
+    const { prisma, ensureSeedUser } = await import("@/lib/db");
+    const user = await ensureSeedUser();
+    const upload = await prisma.upload.create({
+      data: {
+        userId: user.id, title: "My Short", description: "A short clip", fileName: "clip.mp4", filePath: "/tmp/clip.mp4", fileSize: 1024,
+        jobs: { create: [{ platform: "youtube", status: "pending" }, { platform: "tiktok", status: "pending" }] },
+      },
+      include: { jobs: true },
+    });
+    const engine = createJobEngine({
+      resolveAdapter: (platform) => adapterOf(async () => {
+        if (platform === "tiktok") throw new AdapterFailure("TikTok rejected the upload", "terminal");
+        return { url: "https://example.test/youtube/1" };
+      }),
+    });
+
+    await engine.tick();
+
+    const jobs = await prisma.job.findMany({ where: { uploadId: upload.id }, orderBy: { platform: "asc" } });
+    expect(jobs.map((job) => job.status)).toEqual(["failed", "done"]);
+  });
+
   it("leaves a leased job alone until its lease expires", async () => {
     const { createJobEngine } = await import("@/lib/job-engine");
     const { prisma } = await import("@/lib/db");

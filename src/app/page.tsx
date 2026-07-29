@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import type { Platform } from "@/lib/platform";
 
 interface JobView {
   id: string;
-  platform: string;
+  platform: Platform;
   status: "pending" | "uploading" | "done" | "failed";
   resultUrl: string | null;
   error: string | null;
@@ -56,14 +57,22 @@ export function tiktokConnectionStatusText(tiktok: TikTokConnectionView | null):
   return `Connected to ${tiktok.externalAccountLabel ?? tiktok.externalAccountId}`;
 }
 
-function readableFailure(error: string): string {
-  if (error.toLowerCase().includes("reconnect")) return "YouTube needs to be reconnected before this upload can continue.";
-  if (error.toLowerCase().includes("credential")) return "YouTube rejected the connected account credentials.";
-  if (error.includes("429")) return "YouTube is rate limiting uploads. It will retry automatically.";
-  return error;
+function readableFailure(job: JobView): string {
+  const name = job.platform === "tiktok" ? "TikTok" : job.platform === "youtube" ? "YouTube" : "The platform";
+  if (!job.error) return "";
+  if (job.error.toLowerCase().includes("reconnect")) return `${name} needs to be reconnected before this upload can continue.`;
+  if (job.error.toLowerCase().includes("credential")) return `${name} rejected the connected account credentials.`;
+  if (job.error.includes("429")) return `${name} is rate limiting uploads. It will retry automatically.`;
+  return job.error;
 }
 
-function JobOutcome({
+function successMessageFor(job: JobView): string | null {
+  return job.status === "done" && job.platform === "tiktok"
+    ? "Posted privately to your TikTok inbox. Tap it in TikTok to publish."
+    : null;
+}
+
+export function JobOutcome({
   job,
   onRetry,
   history = false,
@@ -72,15 +81,19 @@ function JobOutcome({
   onRetry: () => void;
   history?: boolean;
 }) {
+  const successMessage = successMessageFor(job);
   return <>
     {job.status === "done" && job.resultUrl && (
-      <a href={job.resultUrl} className="truncate text-blue-600 underline dark:text-blue-400">
-        {history ? "View published video" : job.resultUrl}
-      </a>
+      <>
+        <a href={job.resultUrl} className="truncate text-blue-600 underline dark:text-blue-400">
+          {history ? "View published video" : job.resultUrl}
+        </a>
+        {successMessage && <span className="text-green-700 dark:text-green-400">{successMessage}</span>}
+      </>
     )}
     {job.status === "failed" && job.error && (
       <>
-        <span className="text-red-600 dark:text-red-400">{readableFailure(job.error)}</span>
+        <span className="text-red-600 dark:text-red-400">{readableFailure(job)}</span>
         <button type="button" onClick={onRetry} className="w-fit rounded border border-zinc-300 px-2 py-1 text-black dark:border-zinc-700 dark:text-zinc-50">Retry</button>
       </>
     )}

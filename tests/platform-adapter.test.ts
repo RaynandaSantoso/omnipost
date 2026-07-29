@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DryRunAdapter } from "@/lib/adapters/dry-run-adapter";
 import { YouTubeAdapter } from "@/lib/adapters/youtube-adapter";
+import { TikTokAdapter } from "@/lib/adapters/tiktok-adapter";
 import { getAdapter } from "@/lib/adapters/registry";
 
 describe("DryRunAdapter", () => {
@@ -27,9 +28,13 @@ describe("getAdapter", () => {
     expect(getAdapter("youtube")).toBeInstanceOf(YouTubeAdapter);
   });
 
+  it("returns the TikTok adapter for TikTok", () => {
+    expect(getAdapter("tiktok")).toBeInstanceOf(TikTokAdapter);
+  });
+
   it("throws for an unregistered platform", () => {
-    expect(() => getAdapter("tiktok")).toThrow(
-      /no adapter registered for platform "tiktok"/,
+    expect(() => getAdapter("instagram")).toThrow(
+      /no adapter registered for platform "instagram"/,
     );
   });
 });

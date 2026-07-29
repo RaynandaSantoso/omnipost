@@ -2,12 +2,14 @@ import type { PlatformAdapter } from "@/lib/platform-adapter";
 import { platformSchema, type Platform } from "@/lib/platform";
 import { DryRunAdapter } from "@/lib/adapters/dry-run-adapter";
 import { YouTubeAdapter } from "@/lib/adapters/youtube-adapter";
+import { TikTokAdapter } from "@/lib/adapters/tiktok-adapter";
 
 // Keyed by Platform, not string: adding a platform to the shared union
 // without also adding it here is a compile error, not a silent runtime gap.
 const adapters: Record<Platform, PlatformAdapter> = {
   "dry-run": new DryRunAdapter(),
   youtube: new YouTubeAdapter(),
+  tiktok: new TikTokAdapter(),
 };
 
 // Accepts a bare string, not Platform, because its real callers (the job

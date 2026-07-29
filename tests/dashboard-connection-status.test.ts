@@ -1,5 +1,7 @@
+import { renderToStaticMarkup } from "react-dom/server";
+import { createElement } from "react";
 import { describe, expect, it } from "vitest";
-import { tiktokConnectionStatusText, youtubeConnectionStatusText } from "@/app/page";
+import { JobOutcome, tiktokConnectionStatusText, youtubeConnectionStatusText } from "@/app/page";
 
 describe("youtubeConnectionStatusText", () => {
   it("renders the label when connected and labeled", () => {
@@ -92,5 +94,18 @@ describe("tiktokConnectionStatusText", () => {
         reconnectNeeded: false,
       }),
     ).toBe("Not connected");
+  });
+});
+
+describe("JobOutcome", () => {
+  it("renders a completed TikTok job as a private post", () => {
+    const html = renderToStaticMarkup(createElement(JobOutcome, { job: { id: "job-1", platform: "tiktok", status: "done", resultUrl: "tiktok://publish/1", error: null }, onRetry: () => {} }));
+    expect(html).toContain("Posted privately to your TikTok inbox. Tap it in TikTok to publish.");
+  });
+
+  it("renders TikTok-specific recovery guidance for a failed TikTok job", () => {
+    const html = renderToStaticMarkup(createElement(JobOutcome, { job: { id: "job-2", platform: "tiktok", status: "failed", resultUrl: null, error: "TikTok connection needs reconnecting" }, onRetry: () => {} }));
+    expect(html).toContain("TikTok needs to be reconnected");
+    expect(html).not.toContain("YouTube needs");
   });
 });
