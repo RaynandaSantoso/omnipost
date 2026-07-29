@@ -45,6 +45,10 @@ const configSchema = z.object({
   YOUTUBE_CLIENT_ID: z.string().min(1).optional(),
   YOUTUBE_CLIENT_SECRET: z.string().min(1).optional(),
   YOUTUBE_REDIRECT_URI: z.string().url().optional(),
+  // Same optional-until-connected pattern as YOUTUBE_*.
+  TIKTOK_CLIENT_KEY: z.string().min(1).optional(),
+  TIKTOK_CLIENT_SECRET: z.string().min(1).optional(),
+  TIKTOK_REDIRECT_URI: z.string().url().optional(),
   // A base64-encoded, 32-byte AES-256-GCM key. Never include the value in a
   // validation error: config errors name variables, not their secrets.
   TOKEN_ENCRYPTION_KEY: z.string().optional(),

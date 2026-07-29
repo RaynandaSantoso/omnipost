@@ -25,6 +25,8 @@ interface YouTubeConnectionView {
   reconnectNeeded: boolean;
 }
 
+type TikTokConnectionView = YouTubeConnectionView;
+
 const STATUS_LABEL: Record<JobView["status"], string> = {
   pending: "Pending",
   uploading: "Uploading",
@@ -46,6 +48,12 @@ export function youtubeConnectionStatusText(youtube: YouTubeConnectionView | nul
   if (!youtube?.connected) return "Not connected";
   if (youtube.reconnectNeeded) return "Reconnect needed";
   return `Connected to ${youtube.externalAccountLabel ?? youtube.externalAccountId}`;
+}
+
+export function tiktokConnectionStatusText(tiktok: TikTokConnectionView | null): string {
+  if (!tiktok?.connected) return "Not connected";
+  if (tiktok.reconnectNeeded) return "Reconnect needed";
+  return `Connected to ${tiktok.externalAccountLabel ?? tiktok.externalAccountId}`;
 }
 
 function readableFailure(error: string): string {
@@ -92,6 +100,7 @@ export default function Home() {
   const [upload, setUpload] = useState<UploadView | null>(null);
   const [history, setHistory] = useState<UploadView[]>([]);
   const [youtube, setYoutube] = useState<YouTubeConnectionView | null>(null);
+  const [tiktok, setTiktok] = useState<TikTokConnectionView | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // React state (`submitting`) drives the disabled attribute, but a state
   // update isn't applied to the DOM synchronously — a fast double-click can
@@ -121,10 +130,24 @@ export default function Home() {
       .catch(() => setYoutube(null));
   }, []);
 
+  useEffect(() => {
+    fetch("/api/platforms/tiktok")
+      .then(async (response) => (response.ok ? response.json() : null))
+      .then((data: TikTokConnectionView | null) => setTiktok(data))
+      .catch(() => setTiktok(null));
+  }, []);
+
   async function disconnectYouTube() {
     const response = await fetch("/api/platforms/youtube", { method: "DELETE" });
     if (response.ok) {
       setYoutube({ connected: false, externalAccountId: null, externalAccountLabel: null, reconnectNeeded: false });
+    }
+  }
+
+  async function disconnectTikTok() {
+    const response = await fetch("/api/platforms/tiktok", { method: "DELETE" });
+    if (response.ok) {
+      setTiktok({ connected: false, externalAccountId: null, externalAccountLabel: null, reconnectNeeded: false });
     }
   }
 
@@ -286,6 +309,37 @@ export default function Home() {
               Connect YouTube
             </a>
           )}
+        </section>
+
+        <section className="flex w-full flex-col gap-2 rounded-md border border-zinc-200 px-4 py-3 text-sm dark:border-zinc-800">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="font-medium text-black dark:text-zinc-50">TikTok</p>
+              <p className="text-zinc-600 dark:text-zinc-400">
+                {tiktokConnectionStatusText(tiktok)}
+              </p>
+            </div>
+            {tiktok?.connected ? (
+              <button
+                type="button"
+                onClick={disconnectTikTok}
+                className="rounded-md border border-zinc-300 px-3 py-2 text-black dark:border-zinc-700 dark:text-zinc-50"
+              >
+                Disconnect
+              </button>
+            ) : (
+              <a
+                href="/api/platforms/tiktok/connect"
+                className="rounded-md bg-black px-3 py-2 text-white dark:bg-zinc-50 dark:text-black"
+              >
+                Connect TikTok
+              </a>
+            )}
+          </div>
+          <p className="text-xs text-zinc-500 dark:text-zinc-500">
+            Posts land privately in your TikTok inbox (SELF_ONLY) until TikTok
+            approves this app for public posting.
+          </p>
         </section>
 
         <form onSubmit={handleSubmit} className="flex w-full flex-col gap-4">
