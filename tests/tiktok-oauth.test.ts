@@ -137,6 +137,36 @@ describe("TikTok OAuth routes", () => {
     expect(outboundRequests).toBe(0);
   });
 
+  it("validates a proxied callback against its externally visible URL", async () => {
+    const { GET: callback } = await import("@/app/api/platforms/tiktok/callback/route");
+    const redirectUri = process.env.TIKTOK_REDIRECT_URI;
+    process.env.TIKTOK_REDIRECT_URI =
+      "https://public.example/api/platforms/tiktok/callback";
+    resetConfigCache();
+
+    try {
+      const response = await callback(
+        new Request(
+          "http://localhost:3000/api/platforms/tiktok/callback?code=code-123&state=forged",
+          {
+            headers: {
+              "x-forwarded-host": "public.example",
+              "x-forwarded-proto": "https",
+            },
+          },
+        ),
+      );
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        error: "OAuth state is invalid or expired",
+      });
+    } finally {
+      process.env.TIKTOK_REDIRECT_URI = redirectUri;
+      resetConfigCache();
+    }
+  });
+
   it("rejects a callback with no state without contacting TikTok", async () => {
     const { GET: callback } = await import("@/app/api/platforms/tiktok/callback/route");
     let outboundRequests = 0;
