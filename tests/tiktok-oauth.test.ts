@@ -137,6 +137,24 @@ describe("TikTok OAuth routes", () => {
     expect(outboundRequests).toBe(0);
   });
 
+  it("rejects a callback with no state without contacting TikTok", async () => {
+    const { GET: callback } = await import("@/app/api/platforms/tiktok/callback/route");
+    let outboundRequests = 0;
+    oauthServer.use(
+      http.all("*", () => {
+        outboundRequests += 1;
+        return HttpResponse.error();
+      }),
+    );
+
+    const response = await callback(
+      new Request("http://localhost/api/platforms/tiktok/callback?code=code-123"),
+    );
+
+    expect(response.status).toBe(400);
+    expect(outboundRequests).toBe(0);
+  });
+
   it("rejects a callback that arrives at a URI other than the configured redirect URI", async () => {
     const { GET: start } = await import("@/app/api/platforms/tiktok/connect/route");
     const { GET: callback } = await import("@/app/api/platforms/tiktok/callback/route");
@@ -211,7 +229,7 @@ describe("TikTok OAuth routes", () => {
 
   it("refreshes an expired token and persists the replacement encrypted", async () => {
     const { prisma, ensureSeedUser } = await import("@/lib/db");
-    const { encryptToken } = await import("@/lib/token-crypto");
+    const { decryptToken, encryptToken } = await import("@/lib/token-crypto");
     const { accessTokenForTikTok } = await import("@/lib/tiktok-oauth");
     const user = await ensureSeedUser();
     const connection = await prisma.platformConnection.create({
@@ -239,7 +257,9 @@ describe("TikTok OAuth routes", () => {
 
     await expect(accessTokenForTikTok(user.id)).resolves.toBe("fresh-access");
     const updated = await prisma.platformConnection.findUniqueOrThrow({ where: { id: connection.id } });
-    expect(updated.accessTokenEncrypted).not.toContain("fresh-access");
+    expect(decryptToken(updated.accessTokenEncrypted)).toBe("fresh-access");
+    expect(decryptToken(updated.refreshTokenEncrypted)).toBe("fresh-refresh");
+    expect(updated.accessTokenExpiresAt.getTime()).toBeGreaterThan(Date.now());
     expect(updated.refreshError).toBeNull();
   });
 
