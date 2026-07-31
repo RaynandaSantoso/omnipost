@@ -42,7 +42,19 @@ npm install
 npm run dev
 ```
 
-`DATABASE_URL` in `.env.example` defaults to a SQLite file under `./data/`, created on first run.
+`npm run dev` is the all-in-one development launcher. It always starts
+OmniPost and also starts companion services required by configured platforms.
+For example, when `TIKTOK_REDIRECT_URI` is set, it starts the ngrok tunnel for
+TikTok OAuth. Press `Ctrl+C` once to stop every service.
+
+To start only the local app without any companion services, run:
+
+```sh
+npm run dev:app
+```
+
+`DATABASE_URL` in `.env.example` defaults to a SQLite file under `./data/`,
+created on first run.
 
 ### Local TikTok connection
 
@@ -50,16 +62,9 @@ Install and authenticate the ngrok agent once, then set `TIKTOK_REDIRECT_URI`
 in `.env` to your assigned HTTPS ngrok domain plus
 `/api/platforms/tiktok/callback`. Register that exact URI in TikTok Login Kit.
 
-When you need to connect or reconnect TikTok, run:
-
-```sh
-npm run dev:tiktok
-```
-
-This starts both the Next.js development server and an ngrok tunnel using the
-hostname from `TIKTOK_REDIRECT_URI`. The app is publicly reachable while this
-command is running. Press `Ctrl+C` after TikTok connects to stop both processes;
-ordinary posting does not require the tunnel.
+The all-in-one `npm run dev` command starts an ngrok tunnel using the hostname
+from `TIKTOK_REDIRECT_URI`. The app is publicly reachable while this command is
+running. Use `npm run dev:app` instead when the tunnel is not needed.
 
 ## Tests
 

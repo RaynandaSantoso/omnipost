@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "dev:tiktok": "node scripts/dev-tiktok.mjs",
+    "dev": "node scripts/dev-all.mjs",
+    "dev:app": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
