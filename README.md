@@ -44,6 +44,23 @@ npm run dev
 
 `DATABASE_URL` in `.env.example` defaults to a SQLite file under `./data/`, created on first run.
 
+### Local TikTok connection
+
+Install and authenticate the ngrok agent once, then set `TIKTOK_REDIRECT_URI`
+in `.env` to your assigned HTTPS ngrok domain plus
+`/api/platforms/tiktok/callback`. Register that exact URI in TikTok Login Kit.
+
+When you need to connect or reconnect TikTok, run:
+
+```sh
+npm run dev:tiktok
+```
+
+This starts both the Next.js development server and an ngrok tunnel using the
+hostname from `TIKTOK_REDIRECT_URI`. The app is publicly reachable while this
+command is running. Press `Ctrl+C` after TikTok connects to stop both processes;
+ordinary posting does not require the tunnel.
+
 ## Tests
 
 ```sh

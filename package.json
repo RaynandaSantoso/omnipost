@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:tiktok": "node scripts/dev-tiktok.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
