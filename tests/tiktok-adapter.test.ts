@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import { resetConfigCache } from "@/lib/config";
 
 const uploadServer = setupServer();
 const initUrl = "https://open.tiktokapis.com/v2/post/publish/video/init/";
+const statusUrl = "https://open.tiktokapis.com/v2/post/publish/status/fetch/";
 
 describe("TikTokAdapter", () => {
   let dir: string;
@@ -65,9 +66,13 @@ describe("TikTokAdapter", () => {
 
   it("initializes a SELF_ONLY post with the title and description, uploads video bytes, and returns its publish id", async () => {
     const user = await connectedUser();
+    let statusRequests = 0;
     uploadServer.use(
       http.post(initUrl, async ({ request }) => {
         expect(request.headers.get("authorization")).toBe("Bearer access-token");
+        expect(request.headers.get("content-type")).toBe(
+          "application/json; charset=UTF-8",
+        );
         await expect(request.json()).resolves.toMatchObject({
           post_info: { title: "My Short\nA short clip", privacy_level: "SELF_ONLY" },
           source_info: { source: "FILE_UPLOAD", video_size: 11, total_chunk_count: 1 },
@@ -75,13 +80,24 @@ describe("TikTokAdapter", () => {
         return HttpResponse.json({ data: { publish_id: "publish-123", upload_url: "https://upload.tiktok.test/video/1" } });
       }),
       http.put("https://upload.tiktok.test/video/1", async ({ request }) => {
+        expect(request.headers.get("content-length")).toBe("11");
+        expect(request.headers.get("content-type")).toBe("video/mp4");
         expect(Buffer.from(await request.arrayBuffer()).toString()).toBe("video bytes");
         return new HttpResponse(null, { status: 201 });
+      }),
+      http.post(statusUrl, async ({ request }) => {
+        statusRequests += 1;
+        await expect(request.json()).resolves.toEqual({ publish_id: "publish-123" });
+        return HttpResponse.json({
+          data: { status: "PUBLISH_COMPLETE" },
+          error: { code: "ok" },
+        });
       }),
     );
     const { TikTokAdapter } = await import("@/lib/adapters/tiktok-adapter");
     await expect(new TikTokAdapter().upload({ userId: user.id, title: "My Short", description: "A short clip", filePath: videoPath }))
       .resolves.toEqual({ url: "tiktok://publish/publish-123" });
+    expect(statusRequests).toBe(1);
   });
 
   it.each([429, 500])("classifies TikTok %i responses as retryable", async (status) => {
@@ -98,6 +114,181 @@ describe("TikTokAdapter", () => {
     const { TikTokAdapter } = await import("@/lib/adapters/tiktok-adapter");
     await expect(new TikTokAdapter().upload({ userId: user.id, title: "My Short", description: "", filePath: videoPath }))
       .rejects.toMatchObject({ kind: "terminal" });
+  });
+
+  it.each([
+    ["rate_limit_exceeded", "retryable"],
+    ["internal_error", "retryable"],
+    ["spam_risk_user_banned_from_posting", "terminal"],
+    ["access_token_invalid", "terminal"],
+  ] as const)("maps TikTok error code %s to %s", async (code, kind) => {
+    const user = await connectedUser();
+    uploadServer.use(
+      http.post(initUrl, () =>
+        HttpResponse.json({ error: { code, message: "TikTok rejected the request" } }),
+      ),
+    );
+    const { TikTokAdapter } = await import("@/lib/adapters/tiktok-adapter");
+
+    await expect(
+      new TikTokAdapter().upload({
+        userId: user.id,
+        title: "My Short",
+        description: "",
+        filePath: videoPath,
+      }),
+    ).rejects.toMatchObject({ kind, message: expect.stringContaining(code) });
+  });
+
+  it("uses the uploaded video's supported MIME type", async () => {
+    const user = await connectedUser();
+    const webmPath = path.join(dir, "clip.webm");
+    writeFileSync(webmPath, "webm bytes");
+    uploadServer.use(
+      http.post(initUrl, () =>
+        HttpResponse.json({
+          data: {
+            publish_id: "publish-webm",
+            upload_url: "https://upload.tiktok.test/video/webm",
+          },
+          error: { code: "ok" },
+        }),
+      ),
+      http.put("https://upload.tiktok.test/video/webm", ({ request }) => {
+        expect(request.headers.get("content-type")).toBe("video/webm");
+        return new HttpResponse(null, { status: 201 });
+      }),
+      http.post(statusUrl, () =>
+        HttpResponse.json({
+          data: { status: "PUBLISH_COMPLETE" },
+          error: { code: "ok" },
+        }),
+      ),
+    );
+    const { TikTokAdapter } = await import("@/lib/adapters/tiktok-adapter");
+
+    await expect(
+      new TikTokAdapter().upload({
+        userId: user.id,
+        title: "My Short",
+        description: "",
+        filePath: webmPath,
+      }),
+    ).resolves.toEqual({ url: "tiktok://publish/publish-webm" });
+  });
+
+  it.each([
+    ["internal", "retryable"],
+    ["spam_risk_text", "terminal"],
+  ] as const)("maps final TikTok publish failure %s to %s", async (reason, kind) => {
+    const user = await connectedUser();
+    uploadServer.use(
+      http.post(initUrl, () =>
+        HttpResponse.json({
+          data: {
+            publish_id: "publish-failed",
+            upload_url: "https://upload.tiktok.test/video/failed",
+          },
+          error: { code: "ok" },
+        }),
+      ),
+      http.put(
+        "https://upload.tiktok.test/video/failed",
+        () => new HttpResponse(null, { status: 201 }),
+      ),
+      http.post(statusUrl, () =>
+        HttpResponse.json({
+          data: { status: "FAILED", fail_reason: reason },
+          error: { code: "ok" },
+        }),
+      ),
+    );
+    const { TikTokAdapter } = await import("@/lib/adapters/tiktok-adapter");
+
+    await expect(
+      new TikTokAdapter().upload({
+        userId: user.id,
+        title: "My Short",
+        description: "",
+        filePath: videoPath,
+      }),
+    ).rejects.toMatchObject({ kind, message: expect.stringContaining(reason) });
+  });
+
+  it("waits for TikTok processing to reach PUBLISH_COMPLETE", async () => {
+    const user = await connectedUser();
+    let statusRequests = 0;
+    const sleeps: number[] = [];
+    uploadServer.use(
+      http.post(initUrl, () =>
+        HttpResponse.json({
+          data: {
+            publish_id: "publish-processing",
+            upload_url: "https://upload.tiktok.test/video/processing",
+          },
+          error: { code: "ok" },
+        }),
+      ),
+      http.put(
+        "https://upload.tiktok.test/video/processing",
+        () => new HttpResponse(null, { status: 201 }),
+      ),
+      http.post(statusUrl, () => {
+        statusRequests += 1;
+        return HttpResponse.json({
+          data: {
+            status: statusRequests === 1 ? "PROCESSING_UPLOAD" : "PUBLISH_COMPLETE",
+          },
+          error: { code: "ok" },
+        });
+      }),
+    );
+    const { TikTokAdapter } = await import("@/lib/adapters/tiktok-adapter");
+    const adapter = new TikTokAdapter({
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds);
+      },
+      maxStatusChecks: 2,
+    });
+
+    await expect(
+      adapter.upload({
+        userId: user.id,
+        title: "My Short",
+        description: "",
+        filePath: videoPath,
+      }),
+    ).resolves.toEqual({ url: "tiktok://publish/publish-processing" });
+    expect(statusRequests).toBe(2);
+    expect(sleeps).toEqual([2_000]);
+  });
+
+  it("rejects a video above TikTok's single-chunk limit before contacting TikTok", async () => {
+    const user = await connectedUser();
+    const largeVideoPath = path.join(dir, "large.mp4");
+    writeFileSync(largeVideoPath, "");
+    truncateSync(largeVideoPath, 64 * 1024 * 1024 + 1);
+    let requests = 0;
+    uploadServer.use(
+      http.all("*", () => {
+        requests += 1;
+        return HttpResponse.error();
+      }),
+    );
+    const { TikTokAdapter } = await import("@/lib/adapters/tiktok-adapter");
+
+    await expect(
+      new TikTokAdapter().upload({
+        userId: user.id,
+        title: "My Short",
+        description: "",
+        filePath: largeVideoPath,
+      }),
+    ).rejects.toMatchObject({
+      kind: "terminal",
+      message: expect.stringContaining("64 MB"),
+    });
+    expect(requests).toBe(0);
   });
 
   it("hands a TikTok rate limit to the job engine for backoff", async () => {

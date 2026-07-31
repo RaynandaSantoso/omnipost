@@ -100,7 +100,9 @@ describe("tiktokConnectionStatusText", () => {
 describe("JobOutcome", () => {
   it("renders a completed TikTok job as a private post", () => {
     const html = renderToStaticMarkup(createElement(JobOutcome, { job: { id: "job-1", platform: "tiktok", status: "done", resultUrl: "tiktok://publish/1", error: null }, onRetry: () => {} }));
-    expect(html).toContain("Posted privately to your TikTok inbox. Tap it in TikTok to publish.");
+    expect(html).toContain("Posted privately to your TikTok account (SELF_ONLY).");
+    expect(html).not.toContain("Tap it in TikTok");
+    expect(html).not.toContain('href="tiktok://');
   });
 
   it("renders TikTok-specific recovery guidance for a failed TikTok job", () => {

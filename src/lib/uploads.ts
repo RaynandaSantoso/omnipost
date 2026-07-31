@@ -7,7 +7,7 @@ import { platformSchema, type Platform } from "@/lib/platform";
 // independent Job for the same Upload.
 async function selectedPlatforms(userId: string): Promise<Platform[]> {
   const connections = await prisma.platformConnection.findMany({
-    where: { userId, platform: { in: ["youtube", "tiktok"] } },
+    where: { userId },
     select: { platform: true },
   });
   const platforms = connections.flatMap((connection) => {

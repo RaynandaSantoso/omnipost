@@ -68,7 +68,7 @@ function readableFailure(job: JobView): string {
 
 function successMessageFor(job: JobView): string | null {
   return job.status === "done" && job.platform === "tiktok"
-    ? "Posted privately to your TikTok inbox. Tap it in TikTok to publish."
+    ? "Posted privately to your TikTok account (SELF_ONLY)."
     : null;
 }
 
@@ -83,11 +83,13 @@ export function JobOutcome({
 }) {
   const successMessage = successMessageFor(job);
   return <>
-    {job.status === "done" && job.resultUrl && (
+    {job.status === "done" && (
       <>
-        <a href={job.resultUrl} className="truncate text-blue-600 underline dark:text-blue-400">
-          {history ? "View published video" : job.resultUrl}
-        </a>
+        {job.resultUrl && job.platform !== "tiktok" && (
+          <a href={job.resultUrl} className="truncate text-blue-600 underline dark:text-blue-400">
+            {history ? "View published video" : job.resultUrl}
+          </a>
+        )}
         {successMessage && <span className="text-green-700 dark:text-green-400">{successMessage}</span>}
       </>
     )}
@@ -350,8 +352,8 @@ export default function Home() {
             )}
           </div>
           <p className="text-xs text-zinc-500 dark:text-zinc-500">
-            Posts land privately in your TikTok inbox (SELF_ONLY) until TikTok
-            approves this app for public posting.
+            Posts are private (SELF_ONLY) until TikTok approves this app for
+            public posting.
           </p>
         </section>
 
