@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { HttpResponse, http } from "msw";
 import { setupServer } from "msw/node";
 import { resetConfigCache } from "@/lib/config";
-import { UNTRACKED_TRANSFER } from "@/lib/platform-adapter";
+import { UNTRACKED_TRANSFER, type ResumableTransfer } from "@/lib/platform-adapter";
 
 const uploadServer = setupServer();
 const youtubeUploadUrl = "https://www.googleapis.com/upload/youtube/v3/videos";
@@ -100,6 +100,7 @@ describe("YouTubeAdapter", () => {
     const chunkSizeBytes = 10;
     const body = "0123456789abcdefghijklmno"; // 25 bytes: two full chunks and a short one
     const sessionUrl = "https://upload.youtube.test/session/chunked";
+    const freshSessionUrl = "https://upload.youtube.test/session/fresh";
     let chunkedPath: string;
 
     beforeEach(() => {
@@ -135,10 +136,12 @@ describe("YouTubeAdapter", () => {
       return new YouTubeAdapter({ chunkSizeBytes, ...overrides });
     }
 
-    function trackerSpy() {
+    function trackerSpy(resumable: ResumableTransfer | null = null) {
       return {
+        resumable,
         begin: vi.fn<(sessionUrl: string) => Promise<void>>(async () => {}),
         record: vi.fn<(bytesUploaded: number) => Promise<void>>(async () => {}),
+        forget: vi.fn<() => Promise<void>>(async () => {}),
       };
     }
 
@@ -284,6 +287,158 @@ describe("YouTubeAdapter", () => {
       })).rejects.toMatchObject({ kind: "retryable" });
       expect(puts).toBe(2);
     });
+
+    describe("resuming an interrupted transfer", () => {
+      // A crashed attempt: the offset it managed to persist is deliberately
+      // behind what YouTube turns out to be holding.
+      const crashed: ResumableTransfer = { sessionUrl, bytesUploaded: 5 };
+
+      // Answers the resume-query however the test wants, then behaves like a
+      // normal session for the chunks that follow.
+      function resumeWith(answer: () => Response) {
+        const puts: { range: string | null; body: string }[] = [];
+        // Both sessions accept chunks identically; only the resume-query
+        // (which the fresh session never sees) and the resulting video id
+        // tell them apart.
+        const session = (videoId: string, onQuery?: () => Response) =>
+          async ({ request }: { request: Request }) => {
+            const range = request.headers.get("content-range");
+            puts.push({ range, body: Buffer.from(await request.arrayBuffer()).toString() });
+            if (onQuery && range === `bytes */${body.length}`) return onQuery();
+            const end = Number(range?.match(/bytes (\d+)-(\d+)\//)?.[2] ?? 0);
+            if (end + 1 >= body.length) return HttpResponse.json({ id: videoId });
+            return new HttpResponse(null, { status: 308, headers: { Range: `bytes=0-${end}` } });
+          };
+        uploadServer.use(
+          http.post(youtubeUploadUrl, () =>
+            new HttpResponse(null, { status: 200, headers: { Location: freshSessionUrl } }),
+          ),
+          http.put(sessionUrl, session("video-resumed", answer)),
+          http.put(freshSessionUrl, session("video-restarted")),
+        );
+        return puts;
+      }
+
+      it("asks YouTube what it holds and continues from that offset, not the stored one", async () => {
+        const user = await connectedUser();
+        const transfer = trackerSpy(crashed);
+        // YouTube holds 15 bytes; the crashed attempt only persisted 5.
+        const puts = resumeWith(() =>
+          new HttpResponse(null, { status: 308, headers: { Range: "bytes=0-14" } }),
+        );
+
+        await expect((await adapter()).upload({
+          userId: user.id,
+          title: "My Short",
+          description: "",
+          filePath: chunkedPath,
+          transfer,
+        })).resolves.toEqual({ url: "https://www.youtube.com/watch?v=video-resumed" });
+
+        expect(puts[0].range).toBe("bytes */25");
+        expect(puts[0].body).toBe("");
+        expect(puts[1].range).toBe("bytes 15-24/25");
+        // No fresh session was started, so nothing already sent is re-sent.
+        expect(transfer.begin).not.toHaveBeenCalled();
+        expect(transfer.record).toHaveBeenCalledWith(15);
+      });
+
+      it("falls back to the persisted offset when the resume-query is unavailable", async () => {
+        const user = await connectedUser();
+        const transfer = trackerSpy(crashed);
+        const puts = resumeWith(() => HttpResponse.json({ error: {} }, { status: 503 }));
+
+        await expect((await adapter()).upload({
+          userId: user.id,
+          title: "My Short",
+          description: "",
+          filePath: chunkedPath,
+          transfer,
+        })).resolves.toEqual({ url: "https://www.youtube.com/watch?v=video-resumed" });
+
+        expect(puts[0].range).toBe("bytes */25");
+        expect(puts[1].range).toBe("bytes 5-14/25");
+        expect(transfer.begin).not.toHaveBeenCalled();
+      });
+
+      it("falls back to the persisted offset when YouTube cannot be reached at all", async () => {
+        const user = await connectedUser();
+        const transfer = trackerSpy(crashed);
+        const puts = resumeWith(() => HttpResponse.error());
+
+        await expect((await adapter()).upload({
+          userId: user.id,
+          title: "My Short",
+          description: "",
+          filePath: chunkedPath,
+          transfer,
+        })).resolves.toEqual({ url: "https://www.youtube.com/watch?v=video-resumed" });
+
+        expect(puts[1].range).toBe("bytes 5-14/25");
+        expect(transfer.forget).not.toHaveBeenCalled();
+      });
+
+      it("keeps a job alive when the fallback offset meets a session YouTube has dropped", async () => {
+        const user = await connectedUser();
+        uploadServer.use(
+          http.put(sessionUrl, ({ request }) => {
+            // Unreachable for the query, gone for the chunk: without this
+            // being retryable, the 404 would read as terminal and kill a
+            // job whose next attempt would just start a new session.
+            const range = request.headers.get("content-range");
+            if (range === `bytes */${body.length}`) return HttpResponse.error();
+            return HttpResponse.json({ error: {} }, { status: 404 });
+          }),
+        );
+
+        await expect((await adapter()).upload({
+          userId: user.id,
+          title: "My Short",
+          description: "",
+          filePath: chunkedPath,
+          transfer: { ...UNTRACKED_TRANSFER, resumable: crashed },
+        })).rejects.toMatchObject({ kind: "retryable" });
+      });
+
+      it("starts a fresh session from zero when the stored one has expired", async () => {
+        const user = await connectedUser();
+        const transfer = trackerSpy(crashed);
+        const puts = resumeWith(() => HttpResponse.json({ error: {} }, { status: 404 }));
+
+        await expect((await adapter()).upload({
+          userId: user.id,
+          title: "My Short",
+          description: "",
+          filePath: chunkedPath,
+          transfer,
+        })).resolves.toEqual({ url: "https://www.youtube.com/watch?v=video-restarted" });
+
+        // An expired session is a normal outcome, not a job failure: the
+        // stale state is dropped and the video goes up from byte zero.
+        expect(transfer.forget).toHaveBeenCalled();
+        expect(transfer.begin).toHaveBeenCalledWith(freshSessionUrl);
+        expect(puts[1].range).toBe("bytes 0-9/25");
+      });
+
+      it("completes without re-sending when YouTube already has the whole video", async () => {
+        const user = await connectedUser();
+        const transfer = trackerSpy(crashed);
+        // The crash landed between YouTube accepting the last chunk and the
+        // job recording its result; re-uploading would publish twice.
+        const puts = resumeWith(() => HttpResponse.json({ id: "video-already-done" }));
+
+        await expect((await adapter()).upload({
+          userId: user.id,
+          title: "My Short",
+          description: "",
+          filePath: chunkedPath,
+          transfer,
+        })).resolves.toEqual({ url: "https://www.youtube.com/watch?v=video-already-done" });
+
+        expect(puts).toHaveLength(1);
+        expect(transfer.begin).not.toHaveBeenCalled();
+      });
+    });
   });
 
   it.each([429, 500])("classifies YouTube %i responses as retryable", async (status) => {
@@ -366,5 +521,58 @@ describe("YouTubeAdapter", () => {
     expect(job.status).toBe("pending");
     expect(job.error).toContain("429");
     expect(job.nextAttemptAt).toEqual(new Date(now.getTime() + 500));
+  });
+
+  it("resumes a crashed job's transfer through the job engine, from YouTube's offset", async () => {
+    const user = await connectedUser();
+    const { prisma } = await import("@/lib/db");
+    const interruptedUrl = "https://upload.youtube.test/session/interrupted";
+    const upload = await prisma.upload.create({
+      data: {
+        userId: user.id,
+        title: "My Short",
+        description: "A short clip",
+        fileName: "clip.mp4",
+        filePath: videoPath,
+        fileSize: 11,
+        jobs: {
+          // Crashed mid-transfer: the lease has lapsed with nothing
+          // completed, and the offset it persisted lags what YouTube took.
+          create: {
+            platform: "youtube",
+            status: "uploading",
+            attempts: 1,
+            leaseExpiresAt: new Date("2025-12-31T23:59:59.000Z"),
+            uploadSessionUrl: interruptedUrl,
+            bytesUploaded: BigInt(2),
+          },
+        },
+      },
+      include: { jobs: true },
+    });
+
+    const ranges: (string | null)[] = [];
+    uploadServer.use(
+      http.put(interruptedUrl, async ({ request }) => {
+        const range = request.headers.get("content-range");
+        ranges.push(range);
+        if (range === "bytes */11") {
+          return new HttpResponse(null, { status: 308, headers: { Range: "bytes=0-5" } });
+        }
+        expect(Buffer.from(await request.arrayBuffer()).toString()).toBe("bytes");
+        return HttpResponse.json({ id: "video-resumed-e2e" });
+      }),
+    );
+    const { createJobEngine } = await import("@/lib/job-engine");
+
+    await createJobEngine({ clock: { now: () => new Date("2026-01-01T00:00:00.000Z") } }).tick();
+
+    // No fresh session was requested (MSW would have errored on an
+    // unhandled POST), and only the six bytes YouTube lacked were sent.
+    expect(ranges).toEqual(["bytes */11", "bytes 6-10/11"]);
+    const job = await prisma.job.findUniqueOrThrow({ where: { id: upload.jobs[0].id } });
+    expect(job.status).toBe("done");
+    expect(job.resultUrl).toBe("https://www.youtube.com/watch?v=video-resumed-e2e");
+    expect(job.bytesUploaded).toBe(BigInt(11));
   });
 });

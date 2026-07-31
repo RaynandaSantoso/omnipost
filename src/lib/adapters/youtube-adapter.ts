@@ -22,10 +22,20 @@ function contentTypeFor(filePath: string): string {
   return "video/mp4";
 }
 
+// A YouTube that is rate limiting or broken says nothing about whether the
+// request itself was sound, so it is worth repeating; anything else is
+// YouTube rejecting what we sent.
+function isRetryableStatus(response: Response): boolean {
+  return response.status === 429 || response.status >= 500;
+}
+
+// A session YouTube no longer knows about. Not terminal, despite being a
+// 4xx: the video is fine, only this session is gone, and the next attempt
+// starts a new one.
+const SESSION_GONE_STATUSES = new Set([404, 410]);
+
 function failureForResponse(response: Response, action: string): AdapterFailure {
-  const kind = response.status === 429 || response.status >= 500
-    ? "retryable"
-    : "terminal";
+  const kind = isRetryableStatus(response) ? "retryable" : "terminal";
   return new AdapterFailure(`YouTube ${action} failed (${response.status})`, kind);
 }
 
@@ -36,6 +46,31 @@ function failureForResponse(response: Response, action: string): AdapterFailure 
 function confirmedOffset(response: Response, sentThrough: number): number {
   const end = response.headers.get("range")?.match(/bytes=0-(\d+)$/)?.[1];
   return end === undefined ? sentThrough : Number(end) + 1;
+}
+
+// What asking YouTube about an interrupted session can tell us. "Expired"
+// and "unavailable" are deliberately distinct: a session YouTube has
+// forgotten must be replaced, while a YouTube we simply could not reach
+// says nothing about the session, so the persisted offset still stands.
+type ResumeAnswer =
+  | { kind: "offset"; offset: number }
+  | { kind: "completed"; response: Response }
+  | { kind: "expired" }
+  | { kind: "unavailable" };
+
+// What that answer means for this attempt: carry on with the session it
+// already has, request a new one from byte zero, or nothing left to send.
+type TransferPlan =
+  | { kind: "continue"; session: { url: string; offset: number } }
+  | { kind: "start-fresh" }
+  | { kind: "completed"; response: Response };
+
+async function videoUrlFrom(response: Response): Promise<UploadResult> {
+  const result = await response.json().catch(() => null) as { id?: unknown } | null;
+  if (typeof result?.id !== "string" || result.id.length === 0) {
+    throw new AdapterFailure("YouTube did not return a published video ID", "retryable");
+  }
+  return { url: `https://www.youtube.com/watch?v=${encodeURIComponent(result.id)}` };
 }
 
 export interface YouTubeAdapterOptions {
@@ -88,13 +123,47 @@ export class YouTubeAdapter implements PlatformAdapter {
     return sessionUrl;
   }
 
+  // The protocol's own resume-query: a zero-length PUT whose Content-Range
+  // names no bytes, only the total. It is what makes a resumed transfer
+  // safe — YouTube's own count of what it holds, rather than our guess.
+  private async resumeQuery(
+    sessionUrl: string,
+    total: number,
+    contentType: string,
+  ): Promise<ResumeAnswer> {
+    let response: Response;
+    try {
+      response = await fetch(sessionUrl, {
+        method: "PUT",
+        headers: {
+          "Content-Type": contentType,
+          "Content-Range": `bytes */${total}`,
+        },
+        redirect: "manual",
+      });
+    } catch {
+      return { kind: "unavailable" };
+    }
+
+    if (response.status === 308) {
+      // No Range header at all means YouTube holds nothing yet, which is a
+      // resume from zero on a session that is still perfectly good.
+      return { kind: "offset", offset: confirmedOffset(response, 0) };
+    }
+    if (response.ok) return { kind: "completed", response };
+    // 4xx is YouTube telling us this session is gone; 5xx and rate limits
+    // are YouTube telling us nothing at all.
+    return isRetryableStatus(response) ? { kind: "unavailable" } : { kind: "expired" };
+  }
+
   private async transferChunks(
     file: VideoFile,
     sessionUrl: string,
     contentType: string,
     transfer: TransferTracker,
+    startOffset: number,
   ): Promise<Response> {
-    let offset = 0;
+    let offset = startOffset;
     while (offset < file.size) {
       const sentFrom = offset;
       const chunk = await file.read(offset, this.chunkSizeBytes);
@@ -137,6 +206,16 @@ export class YouTubeAdapter implements PlatformAdapter {
         await transfer.record(offset);
         continue;
       }
+      // Reachable when a resume-query was unavailable and we trusted the
+      // persisted offset against a session YouTube had already dropped.
+      // Failing terminally here would kill a job whose next attempt would
+      // simply start a new session and succeed.
+      if (SESSION_GONE_STATUSES.has(response.status)) {
+        throw new AdapterFailure(
+          `YouTube no longer has this upload session (${response.status})`,
+          "retryable",
+        );
+      }
       if (!response.ok) throw failureForResponse(response, "video transfer");
       await transfer.record(file.size);
       return response;
@@ -145,6 +224,33 @@ export class YouTubeAdapter implements PlatformAdapter {
     // Every byte was acknowledged but YouTube never returned the video
     // resource — retrying the session is the documented way forward.
     throw new AdapterFailure("YouTube did not confirm the completed upload", "retryable");
+  }
+
+  // Where this attempt picks up, once the previous one's leftovers have
+  // been checked against YouTube itself.
+  private async planFrom(
+    transfer: TransferTracker,
+    total: number,
+    contentType: string,
+  ): Promise<TransferPlan> {
+    const previous = transfer.resumable;
+    if (!previous) return { kind: "start-fresh" };
+
+    const answer = await this.resumeQuery(previous.sessionUrl, total, contentType);
+    if (answer.kind === "completed") return { kind: "completed", response: answer.response };
+    if (answer.kind === "expired") {
+      // The stale state goes now rather than when a new session happens to
+      // be granted: if starting one fails, the next attempt should not
+      // waste a resume-query on a session YouTube has already disowned.
+      await transfer.forget();
+      return { kind: "start-fresh" };
+    }
+
+    // YouTube's own count wins; the persisted offset stands in only when
+    // YouTube could not be reached to give one.
+    const offset = answer.kind === "offset" ? answer.offset : previous.bytesUploaded;
+    await transfer.record(offset);
+    return { kind: "continue", session: { url: previous.sessionUrl, offset } };
   }
 
   async upload(metadata: UploadMetadata): Promise<UploadResult> {
@@ -169,20 +275,31 @@ export class YouTubeAdapter implements PlatformAdapter {
       if (file.size === 0) {
         throw new AdapterFailure("The uploaded video file is empty", "terminal");
       }
-      const sessionUrl = await this.startSession(token, metadata, contentType);
-      await metadata.transfer.begin(sessionUrl);
+
+      const plan = await this.planFrom(metadata.transfer, file.size, contentType);
+      if (plan.kind === "completed") {
+        // YouTube had the whole video already: a crash between its last
+        // acknowledgement and this job recording a result. Re-sending would
+        // publish the video twice.
+        await metadata.transfer.record(file.size);
+        return videoUrlFrom(plan.response);
+      }
+
+      let session = plan.kind === "continue" ? plan.session : null;
+      if (!session) {
+        const sessionUrl = await this.startSession(token, metadata, contentType);
+        await metadata.transfer.begin(sessionUrl);
+        session = { url: sessionUrl, offset: 0 };
+      }
+
       const completed = await this.transferChunks(
         file,
-        sessionUrl,
+        session.url,
         contentType,
         metadata.transfer,
+        session.offset,
       );
-
-      const result = await completed.json().catch(() => null) as { id?: unknown } | null;
-      if (typeof result?.id !== "string" || result.id.length === 0) {
-        throw new AdapterFailure("YouTube did not return a published video ID", "retryable");
-      }
-      return { url: `https://www.youtube.com/watch?v=${encodeURIComponent(result.id)}` };
+      return videoUrlFrom(completed);
     } finally {
       await file.close().catch(() => {});
     }

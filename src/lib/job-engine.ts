@@ -19,6 +19,12 @@ import { JOB_STATUS } from "@/lib/job-status";
 // worker whose lease was taken away after a stall cannot clobber the
 // winner's result, so a reclaimed job still completes exactly once.
 
+// The transfer columns a Job row carries, as the database hands them over.
+interface JobTransferState {
+  uploadSessionUrl: string | null;
+  bytesUploaded: bigint | null;
+}
+
 export interface JobEngineOptions extends Partial<JobPolicy> {
   clock?: Clock;
   random?: () => number;
@@ -143,8 +149,20 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
   // Transfer state is written through the same lease guard as every other
   // post-claim write: a worker that lost its lease mid-upload must not
   // rewrite the offset of whichever worker took the job over.
-  function transferTrackerFor(jobId: string, lease: string): TransferTracker {
+  function transferTrackerFor(
+    job: JobTransferState & { id: string },
+    lease: string,
+  ): TransferTracker {
+    const jobId = job.id;
     return {
+      // Only a session URL makes an attempt resumable; without one there is
+      // nothing to ask the platform about, whatever offset was left behind.
+      resumable: job.uploadSessionUrl === null
+        ? null
+        : {
+            sessionUrl: job.uploadSessionUrl,
+            bytesUploaded: Number(job.bytesUploaded ?? 0),
+          },
       begin: (sessionUrl) =>
         updateHeldJob(jobId, lease, {
           uploadSessionUrl: sessionUrl,
@@ -154,13 +172,18 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
       // the column is 64-bit because video offsets outgrow 32 bits.
       record: (bytesUploaded) =>
         updateHeldJob(jobId, lease, { bytesUploaded: BigInt(bytesUploaded) }),
+      forget: () =>
+        updateHeldJob(jobId, lease, {
+          uploadSessionUrl: null,
+          bytesUploaded: null,
+        }),
     };
   }
 
   async function runClaimedJob(
     // The Upload row carries everything an adapter needs except the tracker,
     // which is per-attempt state this engine owns rather than upload data.
-    job: {
+    job: JobTransferState & {
       id: string;
       platform: string;
       attempts: number;
@@ -182,7 +205,7 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
       const adapter = resolveAdapter(job.platform);
       const result = await adapter.upload({
         ...job.upload,
-        transfer: transferTrackerFor(job.id, lease),
+        transfer: transferTrackerFor(job, lease),
       });
       await releaseHeldJob(job.id, lease, {
         status: JOB_STATUS.done,

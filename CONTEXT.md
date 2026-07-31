@@ -39,11 +39,20 @@ Single-context repo. See `docs/adr/` for the decisions behind these terms.
   actually got: the platform's upload session URL and the last byte offset
   it confirmed receiving. Plain columns on Job for the same reason the
   lease fields are — per-job bookkeeping, not an entity worth querying.
-  Scoped to the attempt in flight: a fresh session clears both.
-- **TransferTracker** — where an adapter reports that transfer state, a
-  port beside PlatformAdapter. An adapter knows its platform's resumable
-  protocol; it does not know the offsets it reports end up as Job columns,
-  or that the dashboard turns them into a progress bar.
+  It outlives a failed attempt on purpose, so the next one can resume the
+  transfer instead of the job; starting a fresh session clears it. Handed
+  to an adapter as a `ResumableTransfer` — the same concept, named for what
+  the adapter may do with it.
+- **TransferTracker** — the port an adapter reports transfer state to, and
+  reads the previous attempt's state from, beside PlatformAdapter. An
+  adapter knows its platform's resumable protocol; it does not know the
+  offsets it reports end up as Job columns, or that the dashboard turns
+  them into a progress bar.
+- **Resume-query** — asking the platform how many bytes it actually holds
+  before re-sending any (YouTube: a zero-length `PUT` with
+  `Content-Range: bytes */<total>`). Its answer outranks the persisted
+  offset, which is a fallback for a platform that cannot be reached. A
+  session the platform has forgotten is replaced, not retried forever.
 - **VideoFile** — a video opened for positioned reads, a window at a time.
   It exists because reading a whole video into memory to upload it is what
   the deployed 1GB VM cannot afford (`docs/adr/0001-…`).

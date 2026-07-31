@@ -529,6 +529,77 @@ describe("job engine", () => {
     expect(job.status).toBe("done");
   });
 
+  it("hands an adapter the transfer state its interrupted attempt left behind", async () => {
+    const { createJobEngine } = await import("@/lib/job-engine");
+    await seedJob({
+      // A crash mid-transfer: uploading, lease long gone, nothing completed.
+      status: "uploading",
+      attempts: 1,
+      leaseExpiresAt: new Date("2025-12-31T23:59:59.000Z"),
+      uploadSessionUrl: "https://upload.test/interrupted",
+      bytesUploaded: BigInt(4_096),
+    });
+    let resumable: unknown = "adapter never ran";
+
+    const engine = createJobEngine({
+      resolveAdapter: () =>
+        adapterOf(async (metadata) => {
+          resumable = metadata.transfer.resumable;
+          return { url: "https://example.test/v/10" };
+        }),
+    });
+
+    await engine.tick();
+
+    expect(resumable).toEqual({
+      sessionUrl: "https://upload.test/interrupted",
+      bytesUploaded: 4_096,
+    });
+  });
+
+  it("clears transfer state an adapter reports the platform has disowned", async () => {
+    const { createJobEngine } = await import("@/lib/job-engine");
+    const { prisma } = await import("@/lib/db");
+    const { id } = await seedJob({
+      uploadSessionUrl: "https://upload.test/expired",
+      bytesUploaded: BigInt(4_096),
+    });
+
+    const engine = createJobEngine({
+      resolveAdapter: () =>
+        adapterOf(async (metadata) => {
+          await metadata.transfer.forget();
+          // The next attempt must not waste a resume-query on a session
+          // the platform has already said it does not have.
+          throw new AdapterFailure("session expired and restart failed", "retryable");
+        }),
+    });
+
+    await engine.tick();
+
+    const job = await prisma.job.findUniqueOrThrow({ where: { id } });
+    expect(job.uploadSessionUrl).toBeNull();
+    expect(job.bytesUploaded).toBeNull();
+  });
+
+  it("offers no transfer state to a first attempt", async () => {
+    const { createJobEngine } = await import("@/lib/job-engine");
+    await seedJob();
+    let resumable: unknown = "adapter never ran";
+
+    const engine = createJobEngine({
+      resolveAdapter: () =>
+        adapterOf(async (metadata) => {
+          resumable = metadata.transfer.resumable;
+          return { url: "https://example.test/v/11" };
+        }),
+    });
+
+    await engine.tick();
+
+    expect(resumable).toBeNull();
+  });
+
   it("ignores transfer state from a worker whose lease was already reclaimed", async () => {
     const { createJobEngine } = await import("@/lib/job-engine");
     const { prisma } = await import("@/lib/db");
