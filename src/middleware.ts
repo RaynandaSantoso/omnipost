@@ -13,7 +13,14 @@ export const runtime = "nodejs";
 
 // Reachable without a session: the login page and its API, and health,
 // which orchestrators/healthchecks must be able to poll without a cookie.
-const PUBLIC_PATHS = new Set(["/login", "/api/auth/login", "/api/health"]);
+const PUBLIC_PATHS = new Set([
+  "/login",
+  "/api/auth/login",
+  "/api/health",
+  "/terms",
+  "/privacy",
+  "/tiktokgViPYSrytG8FdpTMZoWIQFW1rRLGPKAM.txt",
+]);
 
 function withRenewedSession(request: NextRequest, password: string): NextResponse {
   const response = NextResponse.next();

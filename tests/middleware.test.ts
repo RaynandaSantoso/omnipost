@@ -69,6 +69,18 @@ describe("middleware access gate", () => {
       expect(isPassthrough(middleware(requestFor("/api/health")))).toBe(true);
     });
 
+    it("leaves legal pages and the TikTok verification file publicly reachable", async () => {
+      const { middleware } = await import("@/middleware");
+
+      expect(isPassthrough(middleware(requestFor("/terms")))).toBe(true);
+      expect(isPassthrough(middleware(requestFor("/privacy")))).toBe(true);
+      expect(
+        isPassthrough(
+          middleware(requestFor("/tiktokgViPYSrytG8FdpTMZoWIQFW1rRLGPKAM.txt")),
+        ),
+      ).toBe(true);
+    });
+
     it("admits a request carrying a valid session and renews the cookie", async () => {
       const { middleware } = await import("@/middleware");
       const token = createSessionToken("correct horse");

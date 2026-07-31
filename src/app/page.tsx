@@ -490,6 +490,11 @@ export default function Home() {
             </div>
           ))}
         </section>
+
+        <footer className="flex gap-4 border-t border-zinc-200 pt-6 text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+          <a href="/terms" className="underline">Terms of Service</a>
+          <a href="/privacy" className="underline">Privacy Policy</a>
+        </footer>
       </main>
     </div>
   );
