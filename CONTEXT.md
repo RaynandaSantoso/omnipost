@@ -1,0 +1,65 @@
+# OmniPost domain context
+
+Single-context repo. See `docs/adr/` for the decisions behind these terms.
+
+## Vocabulary
+
+- **User** — a single seeded row (v0.1 is single-tenant). Every domain
+  table carries a `userId` so real multi-user support later is additive,
+  not a schema rewrite. Not to be confused with the *end viewer* of a
+  published video — there is no such concept in this app.
+- **Platform** — one destination a video can be published to:
+  `dry-run`, `youtube`, and (as they land) `tiktok`, `instagram`. A plain
+  string validated at the application layer via a shared Zod/TS union, not
+  a database enum — Prisma has no real enum support on SQLite, and
+  altering a CHECK constraint later means rebuilding the whole table.
+- **PlatformAdapter** — the interface every platform integration
+  implements: "upload this video with this metadata using these
+  credentials, report progress, return a result or a typed failure."
+  Nothing in the job engine or pipeline knows a specific platform exists —
+  it only knows this interface. `DryRunAdapter` is a real implementation
+  of it (the user-facing dry-run feature), not a test double.
+- **PlatformConnection** — one operator's OAuth connection to one
+  Platform: encrypted access/refresh tokens, expiry, and identifying
+  fields for the connected account (`externalAccountId` — the platform's
+  own opaque id — and `externalAccountLabel`, a human-readable handle
+  shown in the UI instead of the raw id).
+- **Upload** — one user-initiated publish action: the source video file,
+  plus the title/description shared across every platform it fans out to
+  (until per-platform overrides land — see roadmap).
+- **Job** — one unit of background work: one Upload to one Platform. An
+  Upload fans out to one Job per target platform. Carries `status`,
+  `attempts`, `nextAttemptAt`, lease fields (`leaseOwner`,
+  `leaseExpiresAt`) that make crash recovery possible, and transfer state
+  (`uploadSessionUrl`, `bytesUploaded`).
+- **Lease** — a time-bounded claim a background worker holds on a Job
+  while working it, renewed by heartbeat. An expired lease is what makes
+  a job reclaimable after a crash, rather than stuck forever.
+- **Transfer state** — how far the platform-side transfer of one Job has
+  actually got: the platform's upload session URL and the last byte offset
+  it confirmed receiving. Plain columns on Job for the same reason the
+  lease fields are — per-job bookkeeping, not an entity worth querying.
+  Scoped to the attempt in flight: a fresh session clears both.
+- **TransferTracker** — where an adapter reports that transfer state, a
+  port beside PlatformAdapter. An adapter knows its platform's resumable
+  protocol; it does not know the offsets it reports end up as Job columns,
+  or that the dashboard turns them into a progress bar.
+- **VideoFile** — a video opened for positioned reads, a window at a time.
+  It exists because reading a whole video into memory to upload it is what
+  the deployed 1GB VM cannot afford (`docs/adr/0001-…`).
+- **Retryable vs. terminal failure** — the classification an adapter
+  attaches to every failure it reports. Retryable (rate limit, 5xx,
+  network) gets exponential backoff with jitter, up to an attempt budget.
+  Terminal (bad credentials, rejected content, quota exhausted) stops
+  immediately and waits for the operator — retrying it would just hammer
+  a platform already telling you no.
+- **Access gate** — the optional shared-password gate (`ACCESS_PASSWORD`),
+  not a user-accounts system. One password, one session cookie, no
+  per-user identity.
+
+## Where decisions live
+
+- `docs/prd/` — what's being built and why, one file per shipped
+  increment (or, for `roadmap.md`, the living index across increments).
+- `docs/adr/` — architectural decisions that outlive any single PRD
+  (hosting, schema shape, cross-platform constraints).

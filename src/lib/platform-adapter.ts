@@ -20,11 +20,31 @@ export class AdapterFailure extends Error {
   }
 }
 
+// Where an adapter persists the state of the transfer it is running, so a
+// confirmed byte offset survives a crash between chunks and the dashboard
+// can report real platform-side progress. The adapter knows its platform's
+// resumable protocol; it does not know these end up as columns on a Job.
+export interface TransferTracker {
+  /** A fresh platform session: its URL replaces any earlier one, from byte zero. */
+  begin(sessionUrl: string): Promise<void>;
+  /** The platform has confirmed receiving this many bytes of the video. */
+  record(bytesUploaded: number): Promise<void>;
+}
+
+// A real tracker that keeps nothing, for callers with no durable place to
+// put transfer state. An adapter cannot tell the difference, which is the
+// point: reporting progress is never conditional on someone listening.
+export const UNTRACKED_TRANSFER: TransferTracker = {
+  begin: async () => {},
+  record: async () => {},
+};
+
 export interface UploadMetadata {
   userId: string;
   title: string;
   description: string;
   filePath: string;
+  transfer: TransferTracker;
 }
 
 export interface UploadResult {

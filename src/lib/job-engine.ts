@@ -5,6 +5,7 @@ import { getAdapter } from "@/lib/adapters/registry";
 import {
   AdapterFailure,
   type PlatformAdapter,
+  type TransferTracker,
   type UploadMetadata,
 } from "@/lib/platform-adapter";
 import { JOB_POLICY_DEFAULTS, type JobPolicy } from "@/lib/job-policy";
@@ -139,8 +140,32 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
     });
   }
 
+  // Transfer state is written through the same lease guard as every other
+  // post-claim write: a worker that lost its lease mid-upload must not
+  // rewrite the offset of whichever worker took the job over.
+  function transferTrackerFor(jobId: string, lease: string): TransferTracker {
+    return {
+      begin: (sessionUrl) =>
+        updateHeldJob(jobId, lease, {
+          uploadSessionUrl: sessionUrl,
+          bytesUploaded: BigInt(0),
+        }),
+      // Widened at the boundary: adapters count bytes in ordinary numbers,
+      // the column is 64-bit because video offsets outgrow 32 bits.
+      record: (bytesUploaded) =>
+        updateHeldJob(jobId, lease, { bytesUploaded: BigInt(bytesUploaded) }),
+    };
+  }
+
   async function runClaimedJob(
-    job: { id: string; platform: string; attempts: number; upload: UploadMetadata },
+    // The Upload row carries everything an adapter needs except the tracker,
+    // which is per-attempt state this engine owns rather than upload data.
+    job: {
+      id: string;
+      platform: string;
+      attempts: number;
+      upload: Omit<UploadMetadata, "transfer">;
+    },
     lease: string,
   ): Promise<void> {
     const beat = setInterval(() => {
@@ -155,7 +180,10 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
 
     try {
       const adapter = resolveAdapter(job.platform);
-      const result = await adapter.upload(job.upload);
+      const result = await adapter.upload({
+        ...job.upload,
+        transfer: transferTrackerFor(job.id, lease),
+      });
       await releaseHeldJob(job.id, lease, {
         status: JOB_STATUS.done,
         resultUrl: result.url,

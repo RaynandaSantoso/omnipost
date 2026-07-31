@@ -2,10 +2,11 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpResponse, http } from "msw";
 import { setupServer } from "msw/node";
 import { resetConfigCache } from "@/lib/config";
+import { UNTRACKED_TRANSFER } from "@/lib/platform-adapter";
 
 const uploadServer = setupServer();
 const youtubeUploadUrl = "https://www.googleapis.com/upload/youtube/v3/videos";
@@ -89,8 +90,200 @@ describe("YouTubeAdapter", () => {
       title: "My Short",
       description: "A short clip",
       filePath: videoPath,
+
+      transfer: UNTRACKED_TRANSFER,
     })).resolves.toEqual({ url: "https://www.youtube.com/watch?v=video-123" });
     expect(resumableUrl).toBeTruthy();
+  });
+
+  describe("chunked transfer", () => {
+    const chunkSizeBytes = 10;
+    const body = "0123456789abcdefghijklmno"; // 25 bytes: two full chunks and a short one
+    const sessionUrl = "https://upload.youtube.test/session/chunked";
+    let chunkedPath: string;
+
+    beforeEach(() => {
+      chunkedPath = path.join(dir, "chunked.mp4");
+      writeFileSync(chunkedPath, body);
+    });
+
+    // Records every chunk YouTube sees, answering 308 until the last one.
+    function acceptChunks(options: { confirmed?: (end: number) => number } = {}) {
+      const chunks: { range: string | null; body: string }[] = [];
+      uploadServer.use(
+        http.post(youtubeUploadUrl, () =>
+          new HttpResponse(null, { status: 200, headers: { Location: sessionUrl } }),
+        ),
+        http.put(sessionUrl, async ({ request }) => {
+          const range = request.headers.get("content-range");
+          const text = Buffer.from(await request.arrayBuffer()).toString();
+          chunks.push({ range, body: text });
+          const end = Number(range?.match(/bytes (\d+)-(\d+)\//)?.[2] ?? 0);
+          if (end + 1 >= body.length) return HttpResponse.json({ id: "video-chunked" });
+          const confirmed = options.confirmed?.(end) ?? end;
+          return new HttpResponse(null, {
+            status: 308,
+            headers: { Range: `bytes=0-${confirmed}` },
+          });
+        }),
+      );
+      return chunks;
+    }
+
+    async function adapter(overrides = {}) {
+      const { YouTubeAdapter } = await import("@/lib/adapters/youtube-adapter");
+      return new YouTubeAdapter({ chunkSizeBytes, ...overrides });
+    }
+
+    function trackerSpy() {
+      return {
+        begin: vi.fn<(sessionUrl: string) => Promise<void>>(async () => {}),
+        record: vi.fn<(bytesUploaded: number) => Promise<void>>(async () => {}),
+      };
+    }
+
+    it("sends the video as Content-Range chunks and completes only on the final response", async () => {
+      const user = await connectedUser();
+      const chunks = acceptChunks();
+
+      await expect((await adapter()).upload({
+        userId: user.id,
+        title: "My Short",
+        description: "",
+        filePath: chunkedPath,
+
+        transfer: UNTRACKED_TRANSFER,
+      })).resolves.toEqual({ url: "https://www.youtube.com/watch?v=video-chunked" });
+
+      expect(chunks.map((chunk) => chunk.range)).toEqual([
+        "bytes 0-9/25",
+        "bytes 10-19/25",
+        "bytes 20-24/25",
+      ]);
+      expect(chunks.map((chunk) => chunk.body).join("")).toBe(body);
+    });
+
+    it("persists the session URL before any bytes are sent, then each confirmed offset", async () => {
+      const user = await connectedUser();
+      const transfer = trackerSpy();
+      let sentBeforeBegin = 0;
+      const chunks = acceptChunks();
+      transfer.begin.mockImplementation(async () => {
+        sentBeforeBegin = chunks.length;
+      });
+
+      await (await adapter()).upload({
+        userId: user.id,
+        title: "My Short",
+        description: "",
+        filePath: chunkedPath,
+        transfer,
+      });
+
+      expect(transfer.begin).toHaveBeenCalledWith(sessionUrl);
+      expect(sentBeforeBegin).toBe(0);
+      // Intermediate offsets, not just the final one: a crash between
+      // chunks must leave the real confirmed offset behind.
+      expect(transfer.record.mock.calls.map(([bytes]) => bytes)).toEqual([10, 20, 25]);
+    });
+
+    it("resumes from the offset YouTube confirms rather than the offset it sent", async () => {
+      const user = await connectedUser();
+      const transfer = trackerSpy();
+      // YouTube acknowledges only half of the first chunk.
+      const chunks = acceptChunks({ confirmed: (end) => (end === 9 ? 4 : end) });
+
+      await (await adapter()).upload({
+        userId: user.id,
+        title: "My Short",
+        description: "",
+        filePath: chunkedPath,
+        transfer,
+      });
+
+      expect(chunks[1].range).toBe("bytes 5-14/25");
+      expect(transfer.record.mock.calls.map(([bytes]) => bytes)).toEqual([5, 15, 25]);
+    });
+
+    it("never reads more than one chunk of the file at a time", async () => {
+      const user = await connectedUser();
+      acceptChunks();
+      const { openVideoFile } = await import("@/lib/video-file");
+      const reads: number[] = [];
+      const openFile = async (filePath: string) => {
+        const file = await openVideoFile(filePath);
+        return {
+          size: file.size,
+          async read(offset: number, length: number) {
+            const bytes = await file.read(offset, length);
+            reads.push(bytes.byteLength);
+            return bytes;
+          },
+          close: () => file.close(),
+        };
+      };
+
+      await (await adapter({ openFile })).upload({
+        userId: user.id,
+        title: "My Short",
+        description: "",
+        filePath: chunkedPath,
+
+        transfer: UNTRACKED_TRANSFER,
+      });
+
+      expect(reads.length).toBeGreaterThan(1);
+      expect(Math.max(...reads)).toBeLessThanOrEqual(chunkSizeBytes);
+    });
+
+    it("keeps a failed chunk retryable and does not report the job done", async () => {
+      const user = await connectedUser();
+      const transfer = trackerSpy();
+      uploadServer.use(
+        http.post(youtubeUploadUrl, () =>
+          new HttpResponse(null, { status: 200, headers: { Location: sessionUrl } }),
+        ),
+        http.put(sessionUrl, ({ request }) => {
+          const end = Number(request.headers.get("content-range")?.match(/-(\d+)\//)?.[1] ?? 0);
+          if (end >= 19) return HttpResponse.json({ error: {} }, { status: 503 });
+          return new HttpResponse(null, { status: 308, headers: { Range: `bytes=0-${end}` } });
+        }),
+      );
+
+      await expect((await adapter()).upload({
+        userId: user.id,
+        title: "My Short",
+        description: "",
+        filePath: chunkedPath,
+        transfer,
+      })).rejects.toMatchObject({ kind: "retryable" });
+      expect(transfer.record).toHaveBeenLastCalledWith(10);
+    });
+
+    it("gives up on a session that stops accepting new bytes", async () => {
+      const user = await connectedUser();
+      let puts = 0;
+      uploadServer.use(
+        http.post(youtubeUploadUrl, () =>
+          new HttpResponse(null, { status: 200, headers: { Location: sessionUrl } }),
+        ),
+        // Always confirms the same offset: without a forward-progress guard
+        // the adapter would re-send chunk one forever.
+        http.put(sessionUrl, () => {
+          puts += 1;
+          return new HttpResponse(null, { status: 308, headers: { Range: "bytes=0-4" } });
+        }),
+      );
+
+      await expect((await adapter()).upload({
+        userId: user.id,
+        title: "My Short",
+        description: "",
+        filePath: chunkedPath,
+        transfer: UNTRACKED_TRANSFER,
+      })).rejects.toMatchObject({ kind: "retryable" });
+      expect(puts).toBe(2);
+    });
   });
 
   it.each([429, 500])("classifies YouTube %i responses as retryable", async (status) => {
@@ -98,7 +291,7 @@ describe("YouTubeAdapter", () => {
     uploadServer.use(http.post(youtubeUploadUrl, () => HttpResponse.json({ error: {} }, { status })));
     const { YouTubeAdapter } = await import("@/lib/adapters/youtube-adapter");
 
-    await expect(new YouTubeAdapter().upload({ userId: user.id, title: "My Short", description: "", filePath: videoPath }))
+    await expect(new YouTubeAdapter().upload({ userId: user.id, title: "My Short", description: "", filePath: videoPath, transfer: UNTRACKED_TRANSFER }))
       .rejects.toMatchObject({ kind: "retryable" });
   });
 
@@ -107,7 +300,7 @@ describe("YouTubeAdapter", () => {
     uploadServer.use(http.post(youtubeUploadUrl, () => HttpResponse.json({ error: {} }, { status: 401 })));
     const { YouTubeAdapter } = await import("@/lib/adapters/youtube-adapter");
 
-    await expect(new YouTubeAdapter().upload({ userId: user.id, title: "My Short", description: "", filePath: videoPath }))
+    await expect(new YouTubeAdapter().upload({ userId: user.id, title: "My Short", description: "", filePath: videoPath, transfer: UNTRACKED_TRANSFER }))
       .rejects.toMatchObject({ kind: "terminal" });
   });
 
@@ -120,7 +313,7 @@ describe("YouTubeAdapter", () => {
     );
     const { YouTubeAdapter } = await import("@/lib/adapters/youtube-adapter");
 
-    await expect(new YouTubeAdapter().upload({ userId: user.id, title: "My Short", description: "", filePath: videoPath }))
+    await expect(new YouTubeAdapter().upload({ userId: user.id, title: "My Short", description: "", filePath: videoPath, transfer: UNTRACKED_TRANSFER }))
       .rejects.toMatchObject({ kind: "terminal" });
   });
 
@@ -139,7 +332,7 @@ describe("YouTubeAdapter", () => {
     );
     const { YouTubeAdapter } = await import("@/lib/adapters/youtube-adapter");
 
-    await expect(new YouTubeAdapter().upload({ userId: user.id, title: "My Short", description: "", filePath: videoPath }))
+    await expect(new YouTubeAdapter().upload({ userId: user.id, title: "My Short", description: "", filePath: videoPath, transfer: UNTRACKED_TRANSFER }))
       .resolves.toEqual({ url: "https://www.youtube.com/watch?v=video-456" });
   });
 

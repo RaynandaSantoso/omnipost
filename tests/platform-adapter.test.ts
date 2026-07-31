@@ -3,6 +3,7 @@ import { DryRunAdapter } from "@/lib/adapters/dry-run-adapter";
 import { YouTubeAdapter } from "@/lib/adapters/youtube-adapter";
 import { TikTokAdapter } from "@/lib/adapters/tiktok-adapter";
 import { getAdapter } from "@/lib/adapters/registry";
+import { UNTRACKED_TRANSFER } from "@/lib/platform-adapter";
 
 describe("DryRunAdapter", () => {
   it("resolves a result url with no outbound network call", async () => {
@@ -13,6 +14,7 @@ describe("DryRunAdapter", () => {
     description: "A short clip",
     filePath: "/tmp/clip.mp4",
     userId: "user-1",
+    transfer: UNTRACKED_TRANSFER,
     });
 
     expect(result.url).toBe("dry-run://My%20Short");

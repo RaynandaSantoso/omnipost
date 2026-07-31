@@ -90,6 +90,15 @@ model Job {
   // what makes a job reclaimable after a crash, rather than stuck.
   leaseOwner     String?
   leaseExpiresAt DateTime?
+  // Resumable transfer state for the in-progress attempt: the platform's
+  // upload session URL and the last offset it confirmed receiving. Plain
+  // columns rather than a separate table for the same reason the lease
+  // fields are — this is per-job bookkeeping, not a queryable entity. A
+  // fresh session clears both.
+  uploadSessionUrl String?
+  // BigInt, not Int: a byte offset into a video outgrows a 32-bit signed
+  // integer at 2.1GB, and YouTube accepts files far larger than that.
+  bytesUploaded    BigInt?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

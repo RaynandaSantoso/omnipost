@@ -22,6 +22,9 @@ export async function GET(
       title: upload.title,
       description: upload.description,
       fileName: upload.fileName,
+      // Paired with each job's bytesUploaded, this is what turns the
+      // platform-side transfer into a percentage the dashboard can show.
+      fileSize: upload.fileSize,
       createdAt: upload.createdAt,
       jobs: upload.jobs.map((job) => ({
         id: job.id,
@@ -29,6 +32,9 @@ export async function GET(
         status: job.status,
         resultUrl: job.resultUrl,
         error: job.error,
+        // Narrowed back for JSON, which has no bigint. Safe: the value is a
+        // byte offset into one video, far below Number's exact-integer range.
+        bytesUploaded: job.bytesUploaded === null ? null : Number(job.bytesUploaded),
       })),
     });
   } catch (error) {

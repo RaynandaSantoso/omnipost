@@ -492,6 +492,85 @@ describe("job engine", () => {
     await running;
   });
 
+  it("persists the transfer state an adapter reports, clearing it for a fresh session", async () => {
+    const { createJobEngine } = await import("@/lib/job-engine");
+    const { prisma } = await import("@/lib/db");
+    const { id } = await seedJob({
+      // Leftovers from an earlier attempt against a session that is gone.
+      uploadSessionUrl: "https://upload.test/old",
+      bytesUploaded: BigInt(900),
+    });
+    const seen: (bigint | null)[] = [];
+
+    const engine = createJobEngine({
+      resolveAdapter: () =>
+        adapterOf(async (metadata) => {
+          await metadata.transfer.begin("https://upload.test/new");
+          seen.push(
+            (await prisma.job.findUniqueOrThrow({ where: { id } })).bytesUploaded,
+          );
+          await metadata.transfer.record(512);
+          seen.push(
+            (await prisma.job.findUniqueOrThrow({ where: { id } })).bytesUploaded,
+          );
+          await metadata.transfer.record(1024);
+          return { url: "https://example.test/v/9" };
+        }),
+    });
+
+    await engine.tick();
+
+    // Each offset lands in the database as it is confirmed, not only at the
+    // end — that is what makes a crash mid-transfer recoverable.
+    expect(seen).toEqual([BigInt(0), BigInt(512)]);
+    const job = await prisma.job.findUniqueOrThrow({ where: { id } });
+    expect(job.uploadSessionUrl).toBe("https://upload.test/new");
+    expect(job.bytesUploaded).toBe(BigInt(1024));
+    expect(job.status).toBe("done");
+  });
+
+  it("ignores transfer state from a worker whose lease was already reclaimed", async () => {
+    const { createJobEngine } = await import("@/lib/job-engine");
+    const { prisma } = await import("@/lib/db");
+    const clock = fakeClock();
+    const { id } = await seedJob();
+
+    let reportProgress: (() => Promise<void>) | undefined;
+    const stalled = createJobEngine({
+      clock,
+      leaseMs: 30_000,
+      heartbeatMs: 60_000,
+      workerId: "stalled",
+      resolveAdapter: () =>
+        adapterOf(
+          (metadata) =>
+            new Promise<UploadResult>((resolve) => {
+              reportProgress = async () => {
+                await metadata.transfer.record(4_096);
+                resolve({ url: "https://example.test/late" });
+              };
+            }),
+        ),
+    });
+    const reclaimer = createJobEngine({
+      clock,
+      workerId: "reclaimer",
+      resolveAdapter: () => adapterOf(async () => ({ url: "https://example.test/winner" })),
+    });
+
+    const stalledRun = stalled.tick();
+    await new Promise((resolve) => setImmediate(resolve));
+    clock.advance(30_001);
+    await reclaimer.tick();
+
+    await reportProgress?.();
+    await stalledRun;
+
+    expect(
+      (await prisma.job.findUniqueOrThrow({ where: { id } })).bytesUploaded,
+    ).toBeNull();
+  });
+
   it("ignores a completion from a worker whose lease was already reclaimed", async () => {
     const { createJobEngine } = await import("@/lib/job-engine");
     const { prisma } = await import("@/lib/db");

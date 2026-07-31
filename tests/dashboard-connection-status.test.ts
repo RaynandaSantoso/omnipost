@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
-import { JobOutcome, tiktokConnectionStatusText, youtubeConnectionStatusText } from "@/app/page";
+import { JobOutcome, tiktokConnectionStatusText, transferPercent, youtubeConnectionStatusText } from "@/app/page";
 
 describe("youtubeConnectionStatusText", () => {
   it("renders the label when connected and labeled", () => {
@@ -109,5 +109,33 @@ describe("JobOutcome", () => {
     const html = renderToStaticMarkup(createElement(JobOutcome, { job: { id: "job-2", platform: "tiktok", status: "failed", resultUrl: null, error: "TikTok connection needs reconnecting" }, onRetry: () => {} }));
     expect(html).toContain("TikTok needs to be reconnected");
     expect(html).not.toContain("YouTube needs");
+  });
+});
+
+describe("transferPercent", () => {
+  const uploading = {
+    id: "job-1",
+    platform: "youtube" as const,
+    status: "uploading" as const,
+    resultUrl: null,
+    error: null,
+    bytesUploaded: 512,
+  };
+
+  it("reports the share of the video the platform has confirmed", () => {
+    expect(transferPercent(uploading, 2048)).toBe(25);
+  });
+
+  it("shows nothing before the transfer reports a first offset", () => {
+    expect(transferPercent({ ...uploading, bytesUploaded: null }, 2048)).toBeNull();
+  });
+
+  it("shows nothing for a job that is not transferring", () => {
+    expect(transferPercent({ ...uploading, status: "pending" }, 2048)).toBeNull();
+    expect(transferPercent({ ...uploading, status: "done" }, 2048)).toBeNull();
+  });
+
+  it("shows nothing when the upload size is unknown", () => {
+    expect(transferPercent(uploading, undefined)).toBeNull();
   });
 });

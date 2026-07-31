@@ -62,4 +62,31 @@ describe("GET /api/uploads/[id]", () => {
     expect(data.jobs[0].status).toBe("done");
     expect(data.jobs[0].resultUrl).toBe("dry-run://x");
   });
+
+  it("reports platform-side transfer progress while a job is uploading", async () => {
+    const { GET } = await import("@/app/api/uploads/[id]/route");
+    const { prisma, ensureSeedUser } = await import("@/lib/db");
+
+    const user = await ensureSeedUser();
+    const upload = await prisma.upload.create({
+      data: {
+        userId: user.id,
+        title: "My Short",
+        description: "A short clip",
+        fileName: "clip.mp4",
+        filePath: "/tmp/clip.mp4",
+        fileSize: 2048,
+        jobs: { create: [{ platform: "youtube", status: "uploading", bytesUploaded: 512 }] },
+      },
+    });
+
+    const response = await GET(
+      new Request(`http://localhost/api/uploads/${upload.id}`),
+      { params: Promise.resolve({ id: upload.id }) },
+    );
+
+    const data = await response.json();
+    expect(data.fileSize).toBe(2048);
+    expect(data.jobs[0].bytesUploaded).toBe(512);
+  });
 });

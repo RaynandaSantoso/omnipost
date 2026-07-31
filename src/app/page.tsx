@@ -10,12 +10,15 @@ interface JobView {
   status: "pending" | "uploading" | "done" | "failed";
   resultUrl: string | null;
   error: string | null;
+  /** Bytes the platform has confirmed receiving, once a transfer is under way. */
+  bytesUploaded?: number | null;
 }
 
 interface UploadView {
   id: string;
   title?: string;
   fileName?: string;
+  fileSize?: number;
   createdAt?: string;
   jobs: JobView[];
 }
@@ -56,6 +59,15 @@ export function tiktokConnectionStatusText(tiktok: TikTokConnectionView | null):
   if (!tiktok?.connected) return "Not connected";
   if (tiktok.reconnectNeeded) return "Reconnect needed";
   return `Connected to ${tiktok.externalAccountLabel ?? tiktok.externalAccountId}`;
+}
+
+// The share of the video the platform itself has taken, which is a
+// different (and longer) leg than the browser-to-server upload the form's
+// own progress bar tracks. Null whenever there is nothing honest to show.
+export function transferPercent(job: JobView, fileSize?: number): number | null {
+  if (job.status !== "uploading") return null;
+  if (!fileSize || job.bytesUploaded == null) return null;
+  return Math.min(100, Math.round((job.bytesUploaded / fileSize) * 100));
 }
 
 function readableFailure(job: JobView): string {
@@ -458,19 +470,31 @@ export default function Home() {
             {upload.jobs.length > 0 && upload.jobs.every((job) => job.status === "done") && (
               <p className="mb-2 font-medium text-green-700 dark:text-green-400">Uploaded successfully.</p>
             )}
-            {upload.jobs.map((job) => (
-              <div key={job.id} className="flex flex-col gap-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-zinc-600 dark:text-zinc-400">
-                    {job.platform}
-                  </span>
-                  <span className="font-medium text-black dark:text-zinc-50">
-                    {STATUS_LABEL[job.status]}
-                  </span>
+            {upload.jobs.map((job) => {
+              const percent = transferPercent(job, upload.fileSize);
+              return (
+                <div key={job.id} className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-600 dark:text-zinc-400">
+                      {job.platform}
+                    </span>
+                    <span className="font-medium text-black dark:text-zinc-50">
+                      {STATUS_LABEL[job.status]}
+                      {percent !== null && ` ${percent}%`}
+                    </span>
+                  </div>
+                  {percent !== null && (
+                    <div className="h-2 overflow-hidden rounded bg-zinc-200 dark:bg-zinc-800">
+                      <div
+                        className="h-full bg-black transition-all dark:bg-zinc-50"
+                        style={{ width: `${percent}%` }}
+                      />
+                    </div>
+                  )}
+                  <JobOutcome job={job} onRetry={() => retryJob(job.id)} />
                 </div>
-                <JobOutcome job={job} onRetry={() => retryJob(job.id)} />
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 

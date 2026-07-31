@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { HttpResponse, http } from "msw";
 import { setupServer } from "msw/node";
 import { resetConfigCache } from "@/lib/config";
+import { UNTRACKED_TRANSFER } from "@/lib/platform-adapter";
 
 const uploadServer = setupServer();
 const initUrl = "https://open.tiktokapis.com/v2/post/publish/video/init/";
@@ -95,7 +96,7 @@ describe("TikTokAdapter", () => {
       }),
     );
     const { TikTokAdapter } = await import("@/lib/adapters/tiktok-adapter");
-    await expect(new TikTokAdapter().upload({ userId: user.id, title: "My Short", description: "A short clip", filePath: videoPath }))
+    await expect(new TikTokAdapter().upload({ userId: user.id, title: "My Short", description: "A short clip", filePath: videoPath, transfer: UNTRACKED_TRANSFER }))
       .resolves.toEqual({ url: "tiktok://publish/publish-123" });
     expect(statusRequests).toBe(1);
   });
@@ -104,7 +105,7 @@ describe("TikTokAdapter", () => {
     const user = await connectedUser();
     uploadServer.use(http.post(initUrl, () => HttpResponse.json({ error: {} }, { status })));
     const { TikTokAdapter } = await import("@/lib/adapters/tiktok-adapter");
-    await expect(new TikTokAdapter().upload({ userId: user.id, title: "My Short", description: "", filePath: videoPath }))
+    await expect(new TikTokAdapter().upload({ userId: user.id, title: "My Short", description: "", filePath: videoPath, transfer: UNTRACKED_TRANSFER }))
       .rejects.toMatchObject({ kind: "retryable" });
   });
 
@@ -112,7 +113,7 @@ describe("TikTokAdapter", () => {
     const user = await connectedUser();
     uploadServer.use(http.post(initUrl, () => HttpResponse.json({ error: {} }, { status: 401 })));
     const { TikTokAdapter } = await import("@/lib/adapters/tiktok-adapter");
-    await expect(new TikTokAdapter().upload({ userId: user.id, title: "My Short", description: "", filePath: videoPath }))
+    await expect(new TikTokAdapter().upload({ userId: user.id, title: "My Short", description: "", filePath: videoPath, transfer: UNTRACKED_TRANSFER }))
       .rejects.toMatchObject({ kind: "terminal" });
   });
 
@@ -136,6 +137,7 @@ describe("TikTokAdapter", () => {
         title: "My Short",
         description: "",
         filePath: videoPath,
+        transfer: UNTRACKED_TRANSFER,
       }),
     ).rejects.toMatchObject({ kind, message: expect.stringContaining(code) });
   });
@@ -173,6 +175,8 @@ describe("TikTokAdapter", () => {
         title: "My Short",
         description: "",
         filePath: webmPath,
+
+        transfer: UNTRACKED_TRANSFER,
       }),
     ).resolves.toEqual({ url: "tiktok://publish/publish-webm" });
   });
@@ -211,6 +215,7 @@ describe("TikTokAdapter", () => {
         title: "My Short",
         description: "",
         filePath: videoPath,
+        transfer: UNTRACKED_TRANSFER,
       }),
     ).rejects.toMatchObject({ kind, message: expect.stringContaining(reason) });
   });
@@ -257,6 +262,7 @@ describe("TikTokAdapter", () => {
         title: "My Short",
         description: "",
         filePath: videoPath,
+        transfer: UNTRACKED_TRANSFER,
       }),
     ).resolves.toEqual({ url: "tiktok://publish/publish-processing" });
     expect(statusRequests).toBe(2);
@@ -307,6 +313,7 @@ describe("TikTokAdapter", () => {
         title: "My Short",
         description: "",
         filePath: videoPath,
+        transfer: UNTRACKED_TRANSFER,
       }),
     ).resolves.toEqual({ url: "tiktok://publish/publish-status-retry" });
     expect(initRequests).toBe(1);
@@ -333,6 +340,8 @@ describe("TikTokAdapter", () => {
         title: "My Short",
         description: "",
         filePath: largeVideoPath,
+
+        transfer: UNTRACKED_TRANSFER,
       }),
     ).rejects.toMatchObject({
       kind: "terminal",
