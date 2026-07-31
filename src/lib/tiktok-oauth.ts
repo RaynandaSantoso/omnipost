@@ -1,13 +1,14 @@
 import { randomBytes } from "node:crypto";
 import { getConfig } from "@/lib/config";
 import { prisma } from "@/lib/db";
+import type { Platform } from "@/lib/platform";
 import { decryptToken, encryptToken } from "@/lib/token-crypto";
 
 const AUTHORIZE_URL = "https://www.tiktok.com/v2/auth/authorize/";
 const TOKEN_URL = "https://open.tiktokapis.com/v2/oauth/token/";
 const USER_INFO_URL = "https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name";
 const STATE_TTL_MS = 10 * 60 * 1000;
-export const TIKTOK_PLATFORM = "tiktok";
+export const TIKTOK_PLATFORM = "tiktok" satisfies Platform;
 
 type TokenResponse = {
   access_token?: string;
@@ -17,14 +18,24 @@ type TokenResponse = {
 
 function getValidatedTikTokOAuthConfig() {
   const config = getConfig();
-  if (!config.TIKTOK_CLIENT_KEY || !config.TIKTOK_CLIENT_SECRET || !config.TIKTOK_REDIRECT_URI) {
-    throw new Error("TikTok OAuth requires TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET, and TIKTOK_REDIRECT_URI");
+  const required = [
+    ["TIKTOK_CLIENT_KEY", config.TIKTOK_CLIENT_KEY],
+    ["TIKTOK_CLIENT_SECRET", config.TIKTOK_CLIENT_SECRET],
+    ["TIKTOK_REDIRECT_URI", config.TIKTOK_REDIRECT_URI],
+  ] as const;
+  const missing = required.filter(([, value]) => !value).map(([name]) => name);
+  if (missing.length > 0) {
+    throw new Error(`TikTok OAuth requires missing configuration: ${missing.join(", ")}`);
   }
-  const redirect = new URL(config.TIKTOK_REDIRECT_URI);
+  const validated = config as Required<
+    Pick<typeof config, "TIKTOK_CLIENT_KEY" | "TIKTOK_CLIENT_SECRET" | "TIKTOK_REDIRECT_URI">
+  > &
+    typeof config;
+  const redirect = new URL(validated.TIKTOK_REDIRECT_URI);
   if (redirect.search || redirect.hash || redirect.username || redirect.password) {
     throw new Error("TIKTOK_REDIRECT_URI must not include query parameters, a fragment, or credentials");
   }
-  return config as Required<Pick<typeof config, "TIKTOK_CLIENT_KEY" | "TIKTOK_CLIENT_SECRET" | "TIKTOK_REDIRECT_URI">> & typeof config;
+  return validated;
 }
 
 async function json(response: Response): Promise<unknown> {

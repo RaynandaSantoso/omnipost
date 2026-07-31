@@ -3,7 +3,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { HttpResponse, http } from "msw";
+import { setupServer } from "msw/node";
 import { resetConfigCache } from "@/lib/config";
+
+const tokenUrl = "https://open.tiktokapis.com/v2/oauth/token/";
+const userInfoUrl = "https://open.tiktokapis.com/v2/user/info/";
+const oauthServer = setupServer();
 
 describe("TikTok OAuth routes", () => {
   let dir: string;
@@ -21,10 +27,11 @@ describe("TikTok OAuth routes", () => {
       stdio: "inherit",
       env: process.env,
     });
+    oauthServer.listen({ onUnhandledRequest: "error" });
   });
 
   afterAll(() => {
-    vi.unstubAllGlobals();
+    oauthServer.close();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -33,7 +40,27 @@ describe("TikTok OAuth routes", () => {
     const { prisma } = await import("@/lib/db");
     await prisma.oAuthState.deleteMany();
     await prisma.platformConnection.deleteMany();
-    vi.unstubAllGlobals();
+    oauthServer.resetHandlers();
+  });
+
+  it("names only the missing TikTok OAuth configuration", async () => {
+    const { GET: start } = await import("@/app/api/platforms/tiktok/connect/route");
+    const clientSecret = process.env.TIKTOK_CLIENT_SECRET;
+    delete process.env.TIKTOK_CLIENT_SECRET;
+    resetConfigCache();
+
+    try {
+      const response = await start();
+      const body = await response.json();
+
+      expect(response.status).toBe(500);
+      expect(body.error).toBe(
+        "TikTok OAuth requires missing configuration: TIKTOK_CLIENT_SECRET",
+      );
+    } finally {
+      process.env.TIKTOK_CLIENT_SECRET = clientSecret;
+      resetConfigCache();
+    }
   });
 
   it("persists encrypted credentials after a state-validated callback", async () => {
@@ -52,21 +79,28 @@ describe("TikTok OAuth routes", () => {
     const state = authorizationUrl.searchParams.get("state");
     expect(state).toBeTruthy();
 
-    vi.stubGlobal(
-      "fetch",
-      vi
-        .fn()
-        .mockResolvedValueOnce(
-          Response.json({
-            access_token: "plain-access-token",
-            refresh_token: "plain-refresh-token",
-            expires_in: 86400,
-            open_id: "open-id-123",
-          }),
-        )
-        .mockResolvedValueOnce(
-          Response.json({ data: { user: { open_id: "open-id-123", display_name: "My TikTok" } } }),
-        ),
+    oauthServer.use(
+      http.post(tokenUrl, async ({ request }) => {
+        const form = await request.formData();
+        expect(form.get("code")).toBe("code-123");
+        expect(form.get("client_key")).toBe("client-key");
+        expect(form.get("client_secret")).toBe("client-secret");
+        expect(form.get("redirect_uri")).toBe(process.env.TIKTOK_REDIRECT_URI);
+        expect(form.get("grant_type")).toBe("authorization_code");
+        return HttpResponse.json({
+          access_token: "plain-access-token",
+          refresh_token: "plain-refresh-token",
+          expires_in: 86400,
+          open_id: "open-id-123",
+        });
+      }),
+      http.get(userInfoUrl, ({ request }) => {
+        expect(request.headers.get("authorization")).toBe("Bearer plain-access-token");
+        expect(new URL(request.url).searchParams.get("fields")).toBe("open_id,display_name");
+        return HttpResponse.json({
+          data: { user: { open_id: "open-id-123", display_name: "My TikTok" } },
+        });
+      }),
     );
 
     const completed = await callback(
@@ -87,45 +121,60 @@ describe("TikTok OAuth routes", () => {
 
   it("rejects a callback with missing or invalid state without contacting TikTok", async () => {
     const { GET: callback } = await import("@/app/api/platforms/tiktok/callback/route");
-    const fetch = vi.fn();
-    vi.stubGlobal("fetch", fetch);
+    let outboundRequests = 0;
+    oauthServer.use(
+      http.all("*", () => {
+        outboundRequests += 1;
+        return HttpResponse.error();
+      }),
+    );
 
     const response = await callback(
       new Request("http://localhost/api/platforms/tiktok/callback?code=code-123&state=forged"),
     );
 
     expect(response.status).toBe(400);
-    expect(fetch).not.toHaveBeenCalled();
+    expect(outboundRequests).toBe(0);
   });
 
   it("rejects a callback that arrives at a URI other than the configured redirect URI", async () => {
     const { GET: start } = await import("@/app/api/platforms/tiktok/connect/route");
     const { GET: callback } = await import("@/app/api/platforms/tiktok/callback/route");
     const state = new URL((await start()).headers.get("location")!).searchParams.get("state");
-    const fetch = vi.fn();
-    vi.stubGlobal("fetch", fetch);
+    let outboundRequests = 0;
+    oauthServer.use(
+      http.all("*", () => {
+        outboundRequests += 1;
+        return HttpResponse.error();
+      }),
+    );
 
     const response = await callback(
       new Request(`http://other-host/api/platforms/tiktok/callback?code=code-123&state=${state}`),
     );
 
     expect(response.status).toBe(400);
-    expect(fetch).not.toHaveBeenCalled();
+    expect(outboundRequests).toBe(0);
   });
 
   it("rejects a same-origin callback at a different path", async () => {
     const { GET: start } = await import("@/app/api/platforms/tiktok/connect/route");
     const { GET: callback } = await import("@/app/api/platforms/tiktok/callback/route");
     const state = new URL((await start()).headers.get("location")!).searchParams.get("state");
-    const fetch = vi.fn();
-    vi.stubGlobal("fetch", fetch);
+    let outboundRequests = 0;
+    oauthServer.use(
+      http.all("*", () => {
+        outboundRequests += 1;
+        return HttpResponse.error();
+      }),
+    );
 
     const response = await callback(
       new Request(`http://localhost/api/platforms/tiktok/other?code=code-123&state=${state}`),
     );
 
     expect(response.status).toBe(400);
-    expect(fetch).not.toHaveBeenCalled();
+    expect(outboundRequests).toBe(0);
   });
 
   it("reports a connected account and disconnects it", async () => {
@@ -175,11 +224,17 @@ describe("TikTok OAuth routes", () => {
         externalAccountId: "open-id-123",
       },
     });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        Response.json({ access_token: "fresh-access", refresh_token: "fresh-refresh", expires_in: 86400 }),
-      ),
+    oauthServer.use(
+      http.post(tokenUrl, async ({ request }) => {
+        const form = await request.formData();
+        expect(form.get("refresh_token")).toBe("old-refresh");
+        expect(form.get("grant_type")).toBe("refresh_token");
+        return HttpResponse.json({
+          access_token: "fresh-access",
+          refresh_token: "fresh-refresh",
+          expires_in: 86400,
+        });
+      }),
     );
 
     await expect(accessTokenForTikTok(user.id)).resolves.toBe("fresh-access");
@@ -203,7 +258,9 @@ describe("TikTok OAuth routes", () => {
         externalAccountId: "open-id-123",
       },
     });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 401 })));
+    oauthServer.use(
+      http.post(tokenUrl, () => new HttpResponse(null, { status: 401 })),
+    );
 
     await expect(accessTokenForTikTok(user.id)).rejects.toThrow("reconnecting");
     await expect(tiktokConnectionStatus(user.id)).resolves.toEqual({
@@ -219,14 +276,18 @@ describe("TikTok OAuth routes", () => {
     const { GET: callback } = await import("@/app/api/platforms/tiktok/callback/route");
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const state = new URL((await start()).headers.get("location")!).searchParams.get("state");
-    vi.stubGlobal(
-      "fetch",
-      vi
-        .fn()
-        .mockResolvedValueOnce(
-          Response.json({ access_token: "never-log-access", refresh_token: "never-log-refresh", expires_in: 86400, open_id: "open-id-123" }),
-        )
-        .mockResolvedValueOnce(Response.json({ data: { user: { open_id: "open-id-123" } } })),
+    oauthServer.use(
+      http.post(tokenUrl, () =>
+        HttpResponse.json({
+          access_token: "never-log-access",
+          refresh_token: "never-log-refresh",
+          expires_in: 86400,
+          open_id: "open-id-123",
+        }),
+      ),
+      http.get(userInfoUrl, () =>
+        HttpResponse.json({ data: { user: { open_id: "open-id-123" } } }),
+      ),
     );
 
     await callback(new Request(`http://localhost/api/platforms/tiktok/callback?code=code-123&state=${state}`));
