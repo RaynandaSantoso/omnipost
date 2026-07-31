@@ -6,11 +6,12 @@ import {
   type UploadMetadata,
   type UploadResult,
 } from "@/lib/platform-adapter";
+import { uploadPolicyFor } from "@/lib/platform-upload-policy";
 
 const VIDEO_INIT_URL = "https://open.tiktokapis.com/v2/post/publish/video/init/";
 const STATUS_URL = "https://open.tiktokapis.com/v2/post/publish/status/fetch/";
 const SELF_ONLY_PRIVACY = "SELF_ONLY";
-const MAX_SINGLE_CHUNK_BYTES = 64 * 1024 * 1024;
+const MAX_SINGLE_CHUNK_BYTES = uploadPolicyFor("tiktok").maxFileSizeBytes!;
 const RETRYABLE_ERROR_CODES = new Set(["internal_error", "rate_limit_exceeded"]);
 const RETRYABLE_PUBLISH_FAILURES = new Set(["internal", "video_pull_failed", "photo_pull_failed"]);
 

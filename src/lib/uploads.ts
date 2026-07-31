@@ -1,35 +1,13 @@
 import { prisma } from "@/lib/db";
 import { saveUploadFile } from "@/lib/storage";
 import { platformSchema, type Platform } from "@/lib/platform";
-
-const TIKTOK_SINGLE_CHUNK_LIMIT_BYTES = 64 * 1024 * 1024;
-const VIDEO_TYPE_BY_EXTENSION: Record<string, string> = {
-  mp4: "video/mp4",
-  mov: "video/quicktime",
-  webm: "video/webm",
-};
+import { uploadPolicyViolation } from "@/lib/platform-upload-policy";
 
 export class UploadValidationError extends Error {}
 
 function validateVideoFile(file: File, platforms: Platform[]): void {
-  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-  const expectedType = VIDEO_TYPE_BY_EXTENSION[extension];
-  if (!expectedType) {
-    throw new UploadValidationError("Use an MP4, WebM, or MOV video file");
-  }
-  if (file.type && file.type !== expectedType) {
-    throw new UploadValidationError(
-      `The video MIME type ${file.type} does not match the .${extension} filename`,
-    );
-  }
-  if (
-    platforms.includes("tiktok") &&
-    file.size > TIKTOK_SINGLE_CHUNK_LIMIT_BYTES
-  ) {
-    throw new UploadValidationError(
-      "TikTok whole-file uploads must be 64 MB or smaller",
-    );
-  }
+  const violation = uploadPolicyViolation(file, platforms);
+  if (violation) throw new UploadValidationError(violation);
 }
 
 // A fresh self-hosted installation stays safely verifiable with dry-run.

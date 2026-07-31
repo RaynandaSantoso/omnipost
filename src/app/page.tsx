@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Platform } from "@/lib/platform";
+import { uploadPolicyViolation } from "@/lib/platform-upload-policy";
 
 interface JobView {
   id: string;
@@ -36,7 +37,6 @@ const STATUS_LABEL: Record<JobView["status"], string> = {
 };
 
 const MAX_FILE_SIZE_BYTES = 256 * 1024 * 1024;
-const TIKTOK_MAX_FILE_SIZE_BYTES = 64 * 1024 * 1024;
 const MAX_DURATION_SECONDS = 180;
 const SUPPORTED_VIDEO_TYPES = new Set(["video/mp4", "video/webm", "video/quicktime"]);
 
@@ -197,15 +197,15 @@ export default function Home() {
       setFileIssue("Use an MP4, WebM, or MOV video file.");
       return;
     }
-    const maxFileSize = tiktok?.connected
-      ? TIKTOK_MAX_FILE_SIZE_BYTES
-      : MAX_FILE_SIZE_BYTES;
-    if (candidate.size > maxFileSize) {
-      setFileIssue(
-        tiktok?.connected
-          ? "TikTok whole-file uploads must be 64 MB or smaller."
-          : "Use a video smaller than 256 MB.",
-      );
+    const platformIssue = tiktok?.connected
+      ? uploadPolicyViolation(candidate, ["tiktok"])
+      : null;
+    if (platformIssue) {
+      setFileIssue(`${platformIssue}.`);
+      return;
+    }
+    if (candidate.size > MAX_FILE_SIZE_BYTES) {
+      setFileIssue("Use a video smaller than 256 MB.");
       return;
     }
 
@@ -258,8 +258,11 @@ export default function Home() {
     if (!file || fileIssue || checkingFile || submitLockRef.current) {
       return;
     }
-    if (tiktok?.connected && file.size > TIKTOK_MAX_FILE_SIZE_BYTES) {
-      setFileIssue("TikTok whole-file uploads must be 64 MB or smaller.");
+    const platformIssue = tiktok?.connected
+      ? uploadPolicyViolation(file, ["tiktok"])
+      : null;
+    if (platformIssue) {
+      setFileIssue(`${platformIssue}.`);
       return;
     }
     submitLockRef.current = true;

@@ -154,6 +154,21 @@ describe("POST /api/uploads", () => {
     expect((await response.json()).error).toContain("does not match");
   });
 
+  it("keeps accepting an extensionless typed video for dry-run", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const response = await POST(
+      uploadRequest({
+        video: new File(["video bytes"], "clip", { type: "video/mp4" }),
+        title: "My Short",
+        description: "",
+        platform: "dry-run",
+      }),
+    );
+
+    expect(response.status).toBe(201);
+    expect((await response.json()).jobs[0].platform).toBe("dry-run");
+  });
+
   it("rejects an unregistered platform with a 400 naming the invalid value, before creating anything", async () => {
     const { POST } = await import("@/app/api/uploads/route");
     const { prisma } = await import("@/lib/db");
