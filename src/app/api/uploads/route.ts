@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ensureSeedUser, prisma } from "@/lib/db";
-import { createUpload } from "@/lib/uploads";
+import { createUpload, UploadValidationError } from "@/lib/uploads";
 import { platformSchema, type Platform } from "@/lib/platform";
 import { logError } from "@/lib/log";
 
@@ -100,6 +100,9 @@ export async function POST(request: Request) {
       { status: 201 },
     );
   } catch (error) {
+    if (error instanceof UploadValidationError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
     const requestId = logError("uploads.POST", error);
     return NextResponse.json({ error: "the upload could not be created", requestId }, { status: 500 });
   }

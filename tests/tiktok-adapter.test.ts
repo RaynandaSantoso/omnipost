@@ -263,6 +263,56 @@ describe("TikTokAdapter", () => {
     expect(sleeps).toEqual([2_000]);
   });
 
+  it("retries a transient status check without starting a second post", async () => {
+    const user = await connectedUser();
+    let initRequests = 0;
+    let statusRequests = 0;
+    uploadServer.use(
+      http.post(initUrl, () => {
+        initRequests += 1;
+        return HttpResponse.json({
+          data: {
+            publish_id: "publish-status-retry",
+            upload_url: "https://upload.tiktok.test/video/status-retry",
+          },
+          error: { code: "ok" },
+        });
+      }),
+      http.put(
+        "https://upload.tiktok.test/video/status-retry",
+        () => new HttpResponse(null, { status: 201 }),
+      ),
+      http.post(statusUrl, () => {
+        statusRequests += 1;
+        return statusRequests === 1
+          ? HttpResponse.json(
+              { error: { code: "rate_limit_exceeded" } },
+              { status: 429 },
+            )
+          : HttpResponse.json({
+              data: { status: "PUBLISH_COMPLETE" },
+              error: { code: "ok" },
+            });
+      }),
+    );
+    const { TikTokAdapter } = await import("@/lib/adapters/tiktok-adapter");
+    const adapter = new TikTokAdapter({
+      sleep: async () => undefined,
+      maxStatusChecks: 2,
+    });
+
+    await expect(
+      adapter.upload({
+        userId: user.id,
+        title: "My Short",
+        description: "",
+        filePath: videoPath,
+      }),
+    ).resolves.toEqual({ url: "tiktok://publish/publish-status-retry" });
+    expect(initRequests).toBe(1);
+    expect(statusRequests).toBe(2);
+  });
+
   it("rejects a video above TikTok's single-chunk limit before contacting TikTok", async () => {
     const user = await connectedUser();
     const largeVideoPath = path.join(dir, "large.mp4");

@@ -36,6 +36,7 @@ const STATUS_LABEL: Record<JobView["status"], string> = {
 };
 
 const MAX_FILE_SIZE_BYTES = 256 * 1024 * 1024;
+const TIKTOK_MAX_FILE_SIZE_BYTES = 64 * 1024 * 1024;
 const MAX_DURATION_SECONDS = 180;
 const SUPPORTED_VIDEO_TYPES = new Set(["video/mp4", "video/webm", "video/quicktime"]);
 
@@ -196,8 +197,15 @@ export default function Home() {
       setFileIssue("Use an MP4, WebM, or MOV video file.");
       return;
     }
-    if (candidate.size > MAX_FILE_SIZE_BYTES) {
-      setFileIssue("Use a video smaller than 256 MB.");
+    const maxFileSize = tiktok?.connected
+      ? TIKTOK_MAX_FILE_SIZE_BYTES
+      : MAX_FILE_SIZE_BYTES;
+    if (candidate.size > maxFileSize) {
+      setFileIssue(
+        tiktok?.connected
+          ? "TikTok whole-file uploads must be 64 MB or smaller."
+          : "Use a video smaller than 256 MB.",
+      );
       return;
     }
 
@@ -248,6 +256,10 @@ export default function Home() {
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (!file || fileIssue || checkingFile || submitLockRef.current) {
+      return;
+    }
+    if (tiktok?.connected && file.size > TIKTOK_MAX_FILE_SIZE_BYTES) {
+      setFileIssue("TikTok whole-file uploads must be 64 MB or smaller.");
       return;
     }
     submitLockRef.current = true;

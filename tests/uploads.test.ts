@@ -117,6 +117,43 @@ describe("POST /api/uploads", () => {
       .toEqual(["tiktok", "youtube"]);
   });
 
+  it("rejects an oversized explicit TikTok upload before saving the file", async () => {
+    const { createUpload } = await import("@/lib/uploads");
+    const { ensureSeedUser } = await import("@/lib/db");
+    const user = await ensureSeedUser();
+    const oversizedFile = {
+      name: "large.mp4",
+      size: 64 * 1024 * 1024 + 1,
+      arrayBuffer: () => {
+        throw new Error("file should not be read");
+      },
+    } as unknown as File;
+
+    await expect(
+      createUpload({
+        userId: user.id,
+        title: "Large clip",
+        description: "",
+        file: oversizedFile,
+        platform: "tiktok",
+      }),
+    ).rejects.toThrow("64 MB");
+  });
+
+  it("rejects a video whose MIME type conflicts with its extension", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const response = await POST(
+      uploadRequest({
+        video: new File(["webm bytes"], "clip.mp4", { type: "video/webm" }),
+        title: "My Short",
+        description: "",
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain("does not match");
+  });
+
   it("rejects an unregistered platform with a 400 naming the invalid value, before creating anything", async () => {
     const { POST } = await import("@/app/api/uploads/route");
     const { prisma } = await import("@/lib/db");

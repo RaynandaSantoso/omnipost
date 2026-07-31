@@ -78,14 +78,32 @@ export class TikTokAdapter implements PlatformAdapter {
           body: JSON.stringify({ publish_id: publishId }),
         });
       } catch {
-        throw new AdapterFailure("TikTok post status could not be checked", "retryable");
+        if (check + 1 < this.maxStatusChecks) {
+          await this.sleep(2_000);
+          continue;
+        }
+        throw new AdapterFailure(
+          `TikTok status for ${publishId} could not be confirmed; check TikTok before retrying`,
+          "terminal",
+        );
       }
 
       const body = await response.json().catch(() => null) as StatusResponse | null;
       const errorCode =
         typeof body?.error?.code === "string" ? body.error.code : undefined;
       if (!response.ok || (errorCode !== undefined && errorCode !== "ok")) {
-        throw failureForResponse(response, "post status", errorCode);
+        const failure = failureForResponse(response, "post status", errorCode);
+        if (failure.kind === "retryable") {
+          if (check + 1 < this.maxStatusChecks) {
+            await this.sleep(2_000);
+            continue;
+          }
+          throw new AdapterFailure(
+            `TikTok status for ${publishId} could not be confirmed; check TikTok before retrying`,
+            "terminal",
+          );
+        }
+        throw failure;
       }
 
       const status = body?.data?.status;
