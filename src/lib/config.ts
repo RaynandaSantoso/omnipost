@@ -49,9 +49,75 @@ const configSchema = z.object({
   TIKTOK_CLIENT_KEY: z.string().min(1).optional(),
   TIKTOK_CLIENT_SECRET: z.string().min(1).optional(),
   TIKTOK_REDIRECT_URI: z.string().url().optional(),
+  // One public HTTPS origin is shared by every local platform integration.
+  // Redirect paths remain platform-specific, but cannot point at a second
+  // tunnel or host.
+  PUBLIC_BASE_URL: z.string().url().optional(),
+  INSTAGRAM_REDIRECT_URI: z.string().url().optional(),
   // A base64-encoded, 32-byte AES-256-GCM key. Never include the value in a
   // validation error: config errors name variables, not their secrets.
   TOKEN_ENCRYPTION_KEY: z.string().optional(),
+}).superRefine((config, context) => {
+  const redirects = [
+    ["TIKTOK_REDIRECT_URI", config.TIKTOK_REDIRECT_URI, "/api/platforms/tiktok/callback"],
+    [
+      "INSTAGRAM_REDIRECT_URI",
+      config.INSTAGRAM_REDIRECT_URI,
+      "/api/platforms/instagram/callback",
+    ],
+  ] as const;
+
+  if (!config.PUBLIC_BASE_URL) {
+    for (const [name, redirectUri] of redirects) {
+      if (redirectUri) {
+        context.addIssue({
+          code: "custom",
+          path: [name],
+          message: `${name} requires PUBLIC_BASE_URL`,
+        });
+      }
+    }
+    return;
+  }
+
+  const publicOrigin = new URL(config.PUBLIC_BASE_URL);
+  if (
+    publicOrigin.protocol !== "https:" ||
+    publicOrigin.pathname !== "/" ||
+    publicOrigin.search ||
+    publicOrigin.hash ||
+    config.PUBLIC_BASE_URL.includes("?") ||
+    config.PUBLIC_BASE_URL.includes("#") ||
+    publicOrigin.username ||
+    publicOrigin.password
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["PUBLIC_BASE_URL"],
+      message: "PUBLIC_BASE_URL must be an HTTPS origin without a path, query, fragment, or credentials",
+    });
+  }
+
+  for (const [name, redirectUri, callbackPath] of redirects) {
+    if (!redirectUri) continue;
+    const redirect = new URL(redirectUri);
+    if (
+      redirect.origin !== publicOrigin.origin ||
+      redirect.pathname !== callbackPath ||
+      redirect.search ||
+      redirect.hash ||
+      redirectUri.includes("?") ||
+      redirectUri.includes("#") ||
+      redirect.username ||
+      redirect.password
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: [name],
+        message: `${name} must use PUBLIC_BASE_URL and end exactly in ${callbackPath}`,
+      });
+    }
+  }
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

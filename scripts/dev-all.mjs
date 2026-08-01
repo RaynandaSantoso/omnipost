@@ -27,53 +27,91 @@ const fileEnv = {
   ...readEnvFile(".env"),
   ...readEnvFile(".env.local"),
 };
-const redirectUri = process.env.TIKTOK_REDIRECT_URI ?? fileEnv.TIKTOK_REDIRECT_URI;
+const envValue = (name) => process.env[name] ?? fileEnv[name];
+const publicBaseUrl = envValue("PUBLIC_BASE_URL");
+const redirects = [
+  ["TIKTOK_REDIRECT_URI", envValue("TIKTOK_REDIRECT_URI"), "/api/platforms/tiktok/callback"],
+  [
+    "INSTAGRAM_REDIRECT_URI",
+    envValue("INSTAGRAM_REDIRECT_URI"),
+    "/api/platforms/instagram/callback",
+  ],
+];
+
+function invalid(message) {
+  console.error(message);
+  process.exit(1);
+}
+
+let publicOrigin;
+if (!publicBaseUrl) {
+  invalid("PUBLIC_BASE_URL is required by npm run dev. Use npm run dev:app for local-only development.");
+} else {
+  try {
+    publicOrigin = new URL(publicBaseUrl);
+  } catch {
+    invalid("PUBLIC_BASE_URL must be a valid URL.");
+  }
+  if (
+    publicOrigin.protocol !== "https:" ||
+    publicOrigin.pathname !== "/" ||
+    publicOrigin.search ||
+    publicOrigin.hash ||
+    publicBaseUrl.includes("?") ||
+    publicBaseUrl.includes("#") ||
+    publicOrigin.username ||
+    publicOrigin.password
+  ) {
+    invalid(
+      "PUBLIC_BASE_URL must be an HTTPS origin without a path, query, fragment, or credentials.",
+    );
+  }
+}
+
+for (const [name, redirectUri, callbackPath] of redirects) {
+  if (!redirectUri) continue;
+
+  let redirect;
+  try {
+    redirect = new URL(redirectUri);
+  } catch {
+    invalid(`${name} must be a valid URL.`);
+  }
+  if (
+    redirect.origin !== publicOrigin.origin ||
+    redirect.pathname !== callbackPath ||
+    redirect.search ||
+    redirect.hash ||
+    redirectUri.includes("?") ||
+    redirectUri.includes("#") ||
+    redirect.username ||
+    redirect.password
+  ) {
+    invalid(`${name} must use PUBLIC_BASE_URL and end exactly in ${callbackPath}.`);
+  }
+}
 
 const services = [
   {
     name: "OmniPost",
-    command: "npm",
-    args: ["run", "dev:app"],
+    command: "next",
+    args: ["dev"],
     message: "http://localhost:3000",
   },
 ];
 
-if (redirectUri) {
-  let callback;
-  try {
-    callback = new URL(redirectUri);
-  } catch {
-    console.error("TIKTOK_REDIRECT_URI must be a valid URL.");
-    process.exit(1);
-  }
-
-  if (
-    callback.protocol !== "https:" ||
-    callback.pathname !== "/api/platforms/tiktok/callback" ||
-    callback.search ||
-    callback.hash
-  ) {
-    console.error(
-      "TIKTOK_REDIRECT_URI must be an HTTPS URL ending exactly in /api/platforms/tiktok/callback.",
-    );
-    process.exit(1);
-  }
-
-  services.push({
-    name: "TikTok OAuth tunnel",
-    command: "ngrok",
-    args: ["http", `--url=${callback.hostname}`, "3000"],
-    message: `${callback.origin} (public)`,
-  });
-}
+services.push({
+  name: "Shared public tunnel",
+  command: "ngrok",
+  args: ["http", `--url=${publicOrigin.hostname}`, "3000"],
+  message: `${publicOrigin.origin} (public)`,
+});
 
 console.log("Starting OmniPost development services:");
 for (const service of services) {
   console.log(`- ${service.name}: ${service.message}`);
 }
-if (redirectUri) {
-  console.log("The app is publicly reachable while the TikTok OAuth tunnel is running.");
-}
+console.log("Keep this terminal and computer running until all platform jobs have settled.");
 console.log("Press Ctrl+C to stop every service.");
 
 const children = services.map((service) => {

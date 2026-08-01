@@ -43,9 +43,11 @@ npm run dev
 ```
 
 `npm run dev` is the all-in-one development launcher. It always starts
-OmniPost and also starts companion services required by configured platforms.
-For example, when `TIKTOK_REDIRECT_URI` is set, it starts the ngrok tunnel for
-TikTok OAuth. Press `Ctrl+C` once to stop every service.
+OmniPost and exactly one shared ngrok tunnel for every configured platform.
+`PUBLIC_BASE_URL` is required for this command. It prints both the local and
+public URLs at startup. Keep the terminal and computer running until all
+platform jobs have settled. Press `Ctrl+C` once to stop OmniPost and ngrok
+together.
 
 To start only the local app without any companion services, run:
 
@@ -56,15 +58,24 @@ npm run dev:app
 `DATABASE_URL` in `.env.example` defaults to a SQLite file under `./data/`,
 created on first run.
 
-### Local TikTok connection
+### Shared public runtime
 
-Install and authenticate the ngrok agent once, then set `TIKTOK_REDIRECT_URI`
-in `.env` to your assigned HTTPS ngrok domain plus
-`/api/platforms/tiktok/callback`. Register that exact URI in TikTok Login Kit.
+Install and authenticate the ngrok agent once, then set `PUBLIC_BASE_URL` in
+`.env` to your assigned HTTPS ngrok origin, with no path, query, fragment, or
+credentials. For example:
 
-The all-in-one `npm run dev` command starts an ngrok tunnel using the hostname
-from `TIKTOK_REDIRECT_URI`. The app is publicly reachable while this command is
-running. Use `npm run dev:app` instead when the tunnel is not needed.
+```dotenv
+PUBLIC_BASE_URL="https://your-domain.ngrok-free.dev"
+TIKTOK_REDIRECT_URI="https://your-domain.ngrok-free.dev/api/platforms/tiktok/callback"
+INSTAGRAM_REDIRECT_URI="https://your-domain.ngrok-free.dev/api/platforms/instagram/callback"
+```
+
+Each configured redirect URI must use that exact origin and its platform's
+exact callback path. Register the TikTok URI in TikTok Login Kit and the
+Instagram URI in the Meta developer app. The all-in-one `npm run dev` command
+uses the shared origin's hostname for one ngrok tunnel, even when both
+platforms are configured. Use `npm run dev:app` instead when no tunnel is
+needed.
 
 ## Tests
 

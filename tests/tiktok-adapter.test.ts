@@ -21,7 +21,9 @@ describe("TikTokAdapter", () => {
     process.env.DATABASE_URL = `file:${path.join(dir, "test.db")}`;
     process.env.TIKTOK_CLIENT_KEY = "client-key";
     process.env.TIKTOK_CLIENT_SECRET = "client-secret";
-    process.env.TIKTOK_REDIRECT_URI = "http://localhost/api/platforms/tiktok/callback";
+    process.env.PUBLIC_BASE_URL = "https://omnipost.test";
+    process.env.TIKTOK_REDIRECT_URI =
+      "https://omnipost.test/api/platforms/tiktok/callback";
     process.env.TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString("base64");
     resetConfigCache();
     writeFileSync(path.join(dir, "test.db"), "");

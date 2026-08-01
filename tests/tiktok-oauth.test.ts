@@ -20,7 +20,9 @@ describe("TikTok OAuth routes", () => {
     writeFileSync(path.join(dir, "test.db"), "");
     process.env.TIKTOK_CLIENT_KEY = "client-key";
     process.env.TIKTOK_CLIENT_SECRET = "client-secret";
-    process.env.TIKTOK_REDIRECT_URI = "http://localhost/api/platforms/tiktok/callback";
+    process.env.PUBLIC_BASE_URL = "https://omnipost.test";
+    process.env.TIKTOK_REDIRECT_URI =
+      "https://omnipost.test/api/platforms/tiktok/callback";
     process.env.TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString("base64");
     resetConfigCache();
     execFileSync("npx", ["--no-install", "prisma", "migrate", "deploy"], {
@@ -105,12 +107,14 @@ describe("TikTok OAuth routes", () => {
 
     const completed = await callback(
       new Request(
-        `http://localhost/api/platforms/tiktok/callback?code=code-123&state=${state}`,
+        `https://omnipost.test/api/platforms/tiktok/callback?code=code-123&state=${state}`,
       ),
     );
 
     expect(completed.status).toBe(307);
-    expect(completed.headers.get("location")).toBe("http://localhost/?tiktok=connected");
+    expect(completed.headers.get("location")).toBe(
+      "https://omnipost.test/?tiktok=connected",
+    );
     const connection = await prisma.platformConnection.findFirstOrThrow();
     expect(connection.platform).toBe("tiktok");
     expect(connection.externalAccountId).toBe("open-id-123");
@@ -140,6 +144,8 @@ describe("TikTok OAuth routes", () => {
   it("validates a proxied callback against its externally visible URL", async () => {
     const { GET: callback } = await import("@/app/api/platforms/tiktok/callback/route");
     const redirectUri = process.env.TIKTOK_REDIRECT_URI;
+    const publicBaseUrl = process.env.PUBLIC_BASE_URL;
+    process.env.PUBLIC_BASE_URL = "https://public.example";
     process.env.TIKTOK_REDIRECT_URI =
       "https://public.example/api/platforms/tiktok/callback";
     resetConfigCache();
@@ -162,6 +168,7 @@ describe("TikTok OAuth routes", () => {
         error: "OAuth state is invalid or expired",
       });
     } finally {
+      process.env.PUBLIC_BASE_URL = publicBaseUrl;
       process.env.TIKTOK_REDIRECT_URI = redirectUri;
       resetConfigCache();
     }
