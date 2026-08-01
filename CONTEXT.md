@@ -56,6 +56,11 @@ Single-context repo. See `docs/adr/` for the decisions behind these terms.
 - **VideoFile** — a video opened for positioned reads, a window at a time.
   It exists because reading a whole video into memory to upload it is what
   the deployed 1GB VM cannot afford (`docs/adr/0001-…`).
+- **Public media URL** — a one-hour, upload-scoped capability URL that lets
+  Instagram fetch a stored video through the shared public origin. Its random
+  HMAC authorization value and expiry are the access boundary: the media route
+  intentionally bypasses the browser password gate, while a raw Upload id is
+  never sufficient to retrieve a file.
 - **Retryable vs. terminal failure** — the classification an adapter
   attaches to every failure it reports. Retryable (rate limit, 5xx,
   network) gets exponential backoff with jitter, up to an attempt budget.

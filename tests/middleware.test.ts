@@ -56,6 +56,18 @@ describe("middleware access gate", () => {
       await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
     });
 
+    it("exempts only the signed media route beneath an upload", async () => {
+      const { middleware } = await import("@/middleware");
+
+      expect(
+        isPassthrough(
+          middleware(requestFor("/api/uploads/upload-123/file?token=signed-value")),
+        ),
+      ).toBe(true);
+      expect(middleware(requestFor("/api/uploads/upload-123")).status).toBe(401);
+      expect(middleware(requestFor("/api/uploads/upload-123/jobs")).status).toBe(401);
+    });
+
     it("leaves the login page and its API reachable without a session", async () => {
       const { middleware } = await import("@/middleware");
 

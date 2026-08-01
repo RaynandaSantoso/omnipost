@@ -32,7 +32,17 @@ An upload is durable work, not a request that has to finish while you wait: `POS
 
 In your own Google Cloud project, enable the YouTube Data API v3, create an OAuth 2.0 **Web application**, and add the exact callback URL configured in `YOUTUBE_REDIRECT_URI` (for example, `https://your-host/api/platforms/youtube/callback`). Publish the OAuth consent screen to **Production**; Testing status issues refresh tokens that expire after seven days. Fill in `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REDIRECT_URI`, and `TOKEN_ENCRYPTION_KEY`, then use **Connect YouTube** on the dashboard.
 
-`TOKEN_ENCRYPTION_KEY` must be a base64-encoded 32-byte key (for example, `openssl rand -base64 32`). Tokens are encrypted with AES-256-GCM in SQLite. Store the database volume with restrictive permissions. Key rotation is out of scope for v0.1: changing this key makes existing connections unreadable, so disconnect and reconnect YouTube afterwards.
+`TOKEN_ENCRYPTION_KEY` must be a base64-encoded 32-byte key (for example, `openssl rand -base64 32`). Platform credentials are encrypted with AES-256-GCM in SQLite, and a domain-separated key derived from it signs public media URLs. Store the database volume with restrictive permissions. Key rotation is out of scope for v0.1: changing this key makes existing connections unreadable and immediately invalidates outstanding media URLs, so disconnect and reconnect platforms afterwards.
+
+### Expiring public media URLs
+
+Instagram receives an HTTPS URL under `/api/uploads/:id/file` so it can fetch
+the stored video while OmniPost is running locally. Each URL is constructed
+from `PUBLIC_BASE_URL`, contains a random upload-scoped HMAC authorization
+value, and expires after one hour. The route deliberately bypasses the shared
+password gate because Meta cannot supply a browser session; the signature and
+expiry are its authorization boundary. Treat generated URLs as sensitive and
+keep `npm run dev` running until Instagram finishes processing the video.
 
 ## Local development (without Docker)
 

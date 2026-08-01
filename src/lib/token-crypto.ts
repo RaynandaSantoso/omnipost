@@ -1,4 +1,9 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHmac,
+  randomBytes,
+} from "node:crypto";
 import { getConfig } from "@/lib/config";
 
 const ALGORITHM = "aes-256-gcm";
@@ -14,7 +19,9 @@ export class TokenCryptoError extends Error {
 function encryptionKey(): Buffer {
   const raw = getConfig().TOKEN_ENCRYPTION_KEY;
   if (!raw) {
-    throw new TokenCryptoError("TOKEN_ENCRYPTION_KEY is required for a YouTube connection");
+    throw new TokenCryptoError(
+      "TOKEN_ENCRYPTION_KEY is required for encrypted credentials and public media URLs",
+    );
   }
   const key = Buffer.from(raw, "base64");
   if (key.length !== 32) {
@@ -25,6 +32,12 @@ function encryptionKey(): Buffer {
 
 export function assertTokenEncryptionKey(): void {
   encryptionKey();
+}
+
+export function derivePublicMediaSigningKey(): Buffer {
+  return createHmac("sha256", encryptionKey())
+    .update("omnipost-public-media-v1")
+    .digest();
 }
 
 export function encryptToken(token: string): string {

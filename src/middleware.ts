@@ -21,6 +21,7 @@ const PUBLIC_PATHS = new Set([
   "/privacy",
   "/tiktokgViPYSrytG8FdpTMZoWIQFW1rRLGPKAM.txt",
 ]);
+const PUBLIC_UPLOAD_MEDIA_PATH = /^\/api\/uploads\/[^/]+\/file$/;
 
 function withRenewedSession(request: NextRequest, password: string): NextResponse {
   const response = NextResponse.next();
@@ -37,7 +38,7 @@ export function middleware(request: NextRequest) {
   }
 
   const { pathname } = request.nextUrl;
-  if (PUBLIC_PATHS.has(pathname)) {
+  if (PUBLIC_PATHS.has(pathname) || PUBLIC_UPLOAD_MEDIA_PATH.test(pathname)) {
     return NextResponse.next();
   }
 
