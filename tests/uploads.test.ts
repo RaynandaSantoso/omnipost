@@ -80,7 +80,7 @@ describe("POST /api/uploads", () => {
     expect(upload?.jobs[0].status).toBe("pending");
   });
 
-  it("fans out to every connected platform", async () => {
+  it("fans out to connected platforms only after their adapter is registered", async () => {
     const { POST } = await import("@/app/api/uploads/route");
     const { prisma, ensureSeedUser } = await import("@/lib/db");
     const { encryptToken } = await import("@/lib/token-crypto");
@@ -103,6 +103,16 @@ describe("POST /api/uploads", () => {
         refreshTokenEncrypted: encryptToken("refresh"),
         accessTokenExpiresAt: new Date(Date.now() + 60_000),
         externalAccountId: "open-id-123",
+      },
+    });
+    await prisma.platformConnection.create({
+      data: {
+        userId: user.id,
+        platform: "instagram",
+        accessTokenEncrypted: encryptToken("access"),
+        refreshTokenEncrypted: encryptToken("refresh"),
+        accessTokenExpiresAt: new Date(Date.now() + 60_000),
+        externalAccountId: "ig-123",
       },
     });
 

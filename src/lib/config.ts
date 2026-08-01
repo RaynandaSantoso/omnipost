@@ -53,6 +53,8 @@ const configSchema = z.object({
   // Redirect paths remain platform-specific, but cannot point at a second
   // tunnel or host.
   PUBLIC_BASE_URL: z.string().url().optional(),
+  INSTAGRAM_APP_ID: z.string().min(1).optional(),
+  INSTAGRAM_APP_SECRET: z.string().min(1).optional(),
   INSTAGRAM_REDIRECT_URI: z.string().url().optional(),
   // A base64-encoded, 32-byte AES-256-GCM key. Never include the value in a
   // validation error: config errors name variables, not their secrets.

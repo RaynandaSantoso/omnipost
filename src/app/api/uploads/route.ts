@@ -3,6 +3,7 @@ import { ensureSeedUser, prisma } from "@/lib/db";
 import { createUpload, UploadValidationError } from "@/lib/uploads";
 import { platformSchema, type Platform } from "@/lib/platform";
 import { logError } from "@/lib/log";
+import { hasRegisteredAdapter } from "@/lib/adapters/registry";
 
 export async function GET() {
   try {
@@ -73,7 +74,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "platform must be a string" }, { status: 400 });
     }
     const parsed = platformSchema.safeParse(platformField);
-    if (!parsed.success) {
+    if (!parsed.success || !hasRegisteredAdapter(parsed.data)) {
       return NextResponse.json(
         { error: `unsupported platform "${platformField}"` },
         { status: 400 },

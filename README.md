@@ -87,6 +87,18 @@ uses the shared origin's hostname for one ngrok tunnel, even when both
 platforms are configured. Use `npm run dev:app` instead when no tunnel is
 needed.
 
+### Instagram connection setup
+
+Create an operator-owned Meta developer app and add Facebook Login for
+Business plus the Instagram Graph API. The Instagram account must be a
+Business or Creator account linked to a Facebook Page; personal or unlinked
+accounts cannot be used by Meta's publishing API. Register the exact
+`INSTAGRAM_REDIRECT_URI`, request the `pages_show_list`,
+`pages_read_engagement`, `instagram_basic`, and `instagram_content_publish`
+permissions, and set `INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET`,
+`INSTAGRAM_REDIRECT_URI`, `PUBLIC_BASE_URL`, and `TOKEN_ENCRYPTION_KEY` in
+`.env`. Then use **Connect Instagram** on the dashboard.
+
 ## Tests
 
 ```sh

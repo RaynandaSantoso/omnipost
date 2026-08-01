@@ -31,6 +31,7 @@ interface YouTubeConnectionView {
 }
 
 type TikTokConnectionView = YouTubeConnectionView;
+type InstagramConnectionView = YouTubeConnectionView;
 
 const STATUS_LABEL: Record<JobView["status"], string> = {
   pending: "Pending",
@@ -59,6 +60,15 @@ export function tiktokConnectionStatusText(tiktok: TikTokConnectionView | null):
   if (!tiktok?.connected) return "Not connected";
   if (tiktok.reconnectNeeded) return "Reconnect needed";
   return `Connected to ${tiktok.externalAccountLabel ?? tiktok.externalAccountId}`;
+}
+
+export function instagramConnectionStatusText(instagram: InstagramConnectionView | null): string {
+  if (!instagram?.connected) return "Not connected";
+  if (instagram.reconnectNeeded) return "Reconnect needed";
+  const account = instagram.externalAccountLabel
+    ? `@${instagram.externalAccountLabel.replace(/^@/, "")}`
+    : instagram.externalAccountId;
+  return `Connected to ${account}`;
 }
 
 // The share of the video the platform itself has taken, which is a
@@ -129,6 +139,7 @@ export default function Home() {
   const [history, setHistory] = useState<UploadView[]>([]);
   const [youtube, setYoutube] = useState<YouTubeConnectionView | null>(null);
   const [tiktok, setTiktok] = useState<TikTokConnectionView | null>(null);
+  const [instagram, setInstagram] = useState<InstagramConnectionView | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // React state (`submitting`) drives the disabled attribute, but a state
   // update isn't applied to the DOM synchronously — a fast double-click can
@@ -165,6 +176,13 @@ export default function Home() {
       .catch(() => setTiktok(null));
   }, []);
 
+  useEffect(() => {
+    fetch("/api/platforms/instagram")
+      .then(async (response) => (response.ok ? response.json() : null))
+      .then((data: InstagramConnectionView | null) => setInstagram(data))
+      .catch(() => setInstagram(null));
+  }, []);
+
   async function disconnectYouTube() {
     const response = await fetch("/api/platforms/youtube", { method: "DELETE" });
     if (response.ok) {
@@ -176,6 +194,13 @@ export default function Home() {
     const response = await fetch("/api/platforms/tiktok", { method: "DELETE" });
     if (response.ok) {
       setTiktok({ connected: false, externalAccountId: null, externalAccountLabel: null, reconnectNeeded: false });
+    }
+  }
+
+  async function disconnectInstagram() {
+    const response = await fetch("/api/platforms/instagram", { method: "DELETE" });
+    if (response.ok) {
+      setInstagram({ connected: false, externalAccountId: null, externalAccountLabel: null, reconnectNeeded: false });
     }
   }
 
@@ -381,6 +406,36 @@ export default function Home() {
           <p className="text-xs text-zinc-500 dark:text-zinc-500">
             Posts are private (SELF_ONLY) until TikTok approves this app for
             public posting.
+          </p>
+        </section>
+
+        <section className="flex w-full flex-col gap-2 rounded-md border border-zinc-200 px-4 py-3 text-sm dark:border-zinc-800">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="font-medium text-black dark:text-zinc-50">Instagram</p>
+              <p className="text-zinc-600 dark:text-zinc-400">
+                {instagramConnectionStatusText(instagram)}
+              </p>
+            </div>
+            {instagram?.connected ? (
+              <button
+                type="button"
+                onClick={disconnectInstagram}
+                className="rounded-md border border-zinc-300 px-3 py-2 text-black dark:border-zinc-700 dark:text-zinc-50"
+              >
+                Disconnect
+              </button>
+            ) : (
+              <a
+                href="/api/platforms/instagram/connect"
+                className="rounded-md bg-black px-3 py-2 text-white dark:bg-zinc-50 dark:text-black"
+              >
+                Connect Instagram
+              </a>
+            )}
+          </div>
+          <p className="text-xs text-zinc-500 dark:text-zinc-500">
+            Requires an Instagram Business or Creator account linked to a Facebook Page.
           </p>
         </section>
 

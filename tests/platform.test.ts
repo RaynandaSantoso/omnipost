@@ -6,10 +6,11 @@ describe("platformSchema", () => {
     expect(platformSchema.safeParse("dry-run").success).toBe(true);
     expect(platformSchema.safeParse("youtube").success).toBe(true);
     expect(platformSchema.safeParse("tiktok").success).toBe(true);
+    expect(platformSchema.safeParse("instagram").success).toBe(true);
   });
 
   it("rejects an unregistered platform value", () => {
-    const result = platformSchema.safeParse("instagram");
+    const result = platformSchema.safeParse("facebook");
     expect(result.success).toBe(false);
   });
 });

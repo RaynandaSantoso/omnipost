@@ -9,6 +9,7 @@ interface PlatformUploadPolicy {
 const PLATFORM_UPLOAD_POLICIES = {
   "dry-run": {},
   youtube: {},
+  instagram: {},
   tiktok: {
     maxFileSizeBytes: 64 * 1024 * 1024,
     oversizeMessage: "TikTok whole-file uploads must be 64 MB or smaller",

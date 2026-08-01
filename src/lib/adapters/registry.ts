@@ -4,9 +4,10 @@ import { DryRunAdapter } from "@/lib/adapters/dry-run-adapter";
 import { YouTubeAdapter } from "@/lib/adapters/youtube-adapter";
 import { TikTokAdapter } from "@/lib/adapters/tiktok-adapter";
 
-// Keyed by Platform, not string: adding a platform to the shared union
-// without also adding it here is a compile error, not a silent runtime gap.
-const adapters: Record<Platform, PlatformAdapter> = {
+// A platform may become connectable one ticket before its publishing adapter
+// lands. The explicit partial registry lets fan-out exclude that platform
+// until the adapter is present instead of creating an unserviceable Job.
+const adapters: Partial<Record<Platform, PlatformAdapter>> = {
   "dry-run": new DryRunAdapter(),
   youtube: new YouTubeAdapter(),
   tiktok: new TikTokAdapter(),
@@ -21,5 +22,13 @@ export function getAdapter(platform: string): PlatformAdapter {
   if (!parsed.success) {
     throw new Error(`no adapter registered for platform "${platform}"`);
   }
-  return adapters[parsed.data];
+  const adapter = adapters[parsed.data];
+  if (!adapter) {
+    throw new Error(`no adapter registered for platform "${platform}"`);
+  }
+  return adapter;
+}
+
+export function hasRegisteredAdapter(platform: Platform): boolean {
+  return Boolean(adapters[platform]);
 }

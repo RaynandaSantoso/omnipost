@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
-import { JobOutcome, tiktokConnectionStatusText, transferPercent, youtubeConnectionStatusText } from "@/app/page";
+import { instagramConnectionStatusText, JobOutcome, tiktokConnectionStatusText, transferPercent, youtubeConnectionStatusText } from "@/app/page";
 
 describe("youtubeConnectionStatusText", () => {
   it("renders the label when connected and labeled", () => {
@@ -94,6 +94,27 @@ describe("tiktokConnectionStatusText", () => {
         reconnectNeeded: false,
       }),
     ).toBe("Not connected");
+  });
+});
+
+describe("instagramConnectionStatusText", () => {
+  it("renders the connected username and reconnect status", () => {
+    expect(instagramConnectionStatusText({
+      connected: true,
+      externalAccountId: "ig-123",
+      externalAccountLabel: "my.creator",
+      reconnectNeeded: false,
+    })).toBe("Connected to @my.creator");
+    expect(instagramConnectionStatusText({
+      connected: true,
+      externalAccountId: "ig-123",
+      externalAccountLabel: "my.creator",
+      reconnectNeeded: true,
+    })).toBe("Reconnect needed");
+  });
+
+  it("reports not connected without a connection", () => {
+    expect(instagramConnectionStatusText(null)).toBe("Not connected");
   });
 });
 
