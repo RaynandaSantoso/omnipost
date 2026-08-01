@@ -322,4 +322,32 @@ describe("Instagram OAuth routes", () => {
     await expect(accessTokenForInstagram(user.id)).rejects.toThrow("reconnecting");
     await expect(instagramConnectionStatus(user.id)).resolves.toMatchObject({ reconnectNeeded: true });
   });
+
+  it("leaves the connection healthy when renewal fails transiently", async () => {
+    const { prisma, ensureSeedUser } = await import("@/lib/db");
+    const { encryptToken } = await import("@/lib/token-crypto");
+    const {
+      accessTokenForInstagram,
+      instagramConnectionStatus,
+    } = await import("@/lib/instagram-oauth");
+    const user = await ensureSeedUser();
+    await prisma.platformConnection.create({
+      data: {
+        userId: user.id,
+        platform: "instagram",
+        accessTokenEncrypted: encryptToken("expired-page-token"),
+        refreshTokenEncrypted: encryptToken("old-user-token"),
+        accessTokenExpiresAt: new Date(Date.now() - 1),
+        externalAccountId: "ig-123",
+      },
+    });
+    oauthServer.use(http.get(tokenUrl, () => new HttpResponse(null, { status: 503 })));
+
+    await expect(accessTokenForInstagram(user.id)).rejects.toMatchObject({
+      kind: "retryable",
+    });
+    await expect(instagramConnectionStatus(user.id)).resolves.toMatchObject({
+      reconnectNeeded: false,
+    });
+  });
 });

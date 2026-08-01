@@ -3,14 +3,13 @@ import { platformSchema, type Platform } from "@/lib/platform";
 import { DryRunAdapter } from "@/lib/adapters/dry-run-adapter";
 import { YouTubeAdapter } from "@/lib/adapters/youtube-adapter";
 import { TikTokAdapter } from "@/lib/adapters/tiktok-adapter";
+import { InstagramAdapter } from "@/lib/adapters/instagram-adapter";
 
-// A platform may become connectable one ticket before its publishing adapter
-// lands. The explicit partial registry lets fan-out exclude that platform
-// until the adapter is present instead of creating an unserviceable Job.
-const adapters: Partial<Record<Platform, PlatformAdapter>> = {
+const adapters: Record<Platform, PlatformAdapter> = {
   "dry-run": new DryRunAdapter(),
   youtube: new YouTubeAdapter(),
   tiktok: new TikTokAdapter(),
+  instagram: new InstagramAdapter(),
 };
 
 // Accepts a bare string, not Platform, because its real callers (the job
@@ -22,13 +21,5 @@ export function getAdapter(platform: string): PlatformAdapter {
   if (!parsed.success) {
     throw new Error(`no adapter registered for platform "${platform}"`);
   }
-  const adapter = adapters[parsed.data];
-  if (!adapter) {
-    throw new Error(`no adapter registered for platform "${platform}"`);
-  }
-  return adapter;
-}
-
-export function hasRegisteredAdapter(platform: Platform): boolean {
-  return Boolean(adapters[platform]);
+  return adapters[parsed.data];
 }

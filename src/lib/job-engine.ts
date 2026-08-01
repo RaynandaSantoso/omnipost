@@ -187,7 +187,7 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
       id: string;
       platform: string;
       attempts: number;
-      upload: Omit<UploadMetadata, "transfer">;
+      upload: Omit<UploadMetadata, "transfer"> & { id: string };
     },
     lease: string,
   ): Promise<void> {
@@ -205,6 +205,7 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
       const adapter = resolveAdapter(job.platform);
       const result = await adapter.upload({
         ...job.upload,
+        uploadId: job.upload.id,
         transfer: transferTrackerFor(job, lease),
       });
       await releaseHeldJob(job.id, lease, {
@@ -271,29 +272,36 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
       const now = clock.now();
       const candidates = await prisma.job.findMany({
         where: runnableWhere(now),
-        select: { id: true },
+        select: { id: true, uploadId: true },
         orderBy: { createdAt: "asc" },
       });
 
+      const byUpload = new Map<string, typeof candidates>();
       for (const candidate of candidates) {
-        const lease = await claim(candidate.id, clock.now());
-        if (!lease) {
-          continue;
-        }
-        const job = await prisma.job.findUnique({
-          where: { id: candidate.id },
-          include: { upload: true },
-        });
-        if (!job) {
-          continue;
-        }
-        const running = runClaimedJob(job, lease);
-        inFlight.add(running);
-        try {
-          await running;
-        } finally {
-          inFlight.delete(running);
-        }
+        const group = byUpload.get(candidate.uploadId) ?? [];
+        group.push(candidate);
+        byUpload.set(candidate.uploadId, group);
+      }
+      // One upload's platform jobs are independent and run together, so a
+      // poll-based platform cannot hold up direct uploads. Uploads themselves
+      // stay ordered to bound simultaneous video transfers and memory use.
+      for (const uploadCandidates of byUpload.values()) {
+        await Promise.all(uploadCandidates.map(async (candidate) => {
+          const lease = await claim(candidate.id, clock.now());
+          if (!lease) return;
+          const job = await prisma.job.findUnique({
+            where: { id: candidate.id },
+            include: { upload: true },
+          });
+          if (!job) return;
+          const running = runClaimedJob(job, lease);
+          inFlight.add(running);
+          try {
+            await running;
+          } finally {
+            inFlight.delete(running);
+          }
+        }));
       }
     },
 

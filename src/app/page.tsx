@@ -44,10 +44,47 @@ const MAX_FILE_SIZE_BYTES = 256 * 1024 * 1024;
 const MAX_DURATION_SECONDS = 180;
 const SUPPORTED_VIDEO_TYPES = new Set(["video/mp4", "video/webm", "video/quicktime"]);
 
+interface PlatformPresentation {
+  name: string;
+  linkResult: boolean;
+  uploadingMessage?: string;
+  successMessage?: (job: JobView) => string | null;
+}
+
+const PLATFORM_PRESENTATION: Record<Platform, PlatformPresentation> = {
+  "dry-run": { name: "The platform", linkResult: true },
+  youtube: { name: "YouTube", linkResult: true },
+  tiktok: {
+    name: "TikTok",
+    linkResult: false,
+    successMessage: () => "Posted privately to your TikTok account (SELF_ONLY).",
+  },
+  instagram: {
+    name: "Instagram",
+    linkResult: false,
+    uploadingMessage: "Instagram is fetching and processing your Reel.",
+    successMessage: (job) => {
+      const prefix = "instagram://media/";
+      if (!job.resultUrl?.startsWith(prefix)) return null;
+      return `Published to Instagram (media ${decodeURIComponent(job.resultUrl.slice(prefix.length))}).`;
+    },
+  },
+};
+
 function typeFor(file: File): string {
   if (file.type) return file.type;
   const extension = file.name.split(".").pop()?.toLowerCase();
   return extension === "mov" ? "video/quicktime" : `video/${extension ?? "unknown"}`;
+}
+
+function uploadPolicyPlatforms(
+  tiktok: TikTokConnectionView | null,
+  instagram: InstagramConnectionView | null,
+): Platform[] {
+  return [
+    ...(tiktok?.connected ? ["tiktok" as const] : []),
+    ...(instagram?.connected ? ["instagram" as const] : []),
+  ];
 }
 
 export function youtubeConnectionStatusText(youtube: YouTubeConnectionView | null): string {
@@ -81,7 +118,7 @@ export function transferPercent(job: JobView, fileSize?: number): number | null 
 }
 
 function readableFailure(job: JobView): string {
-  const name = job.platform === "tiktok" ? "TikTok" : job.platform === "youtube" ? "YouTube" : "The platform";
+  const name = PLATFORM_PRESENTATION[job.platform].name;
   if (!job.error) return "";
   if (job.error.toLowerCase().includes("reconnect")) return `${name} needs to be reconnected before this upload can continue.`;
   if (job.error.toLowerCase().includes("credential")) return `${name} rejected the connected account credentials.`;
@@ -90,9 +127,8 @@ function readableFailure(job: JobView): string {
 }
 
 function successMessageFor(job: JobView): string | null {
-  return job.status === "done" && job.platform === "tiktok"
-    ? "Posted privately to your TikTok account (SELF_ONLY)."
-    : null;
+  if (job.status !== "done") return null;
+  return PLATFORM_PRESENTATION[job.platform].successMessage?.(job) ?? null;
 }
 
 export function JobOutcome({
@@ -104,11 +140,17 @@ export function JobOutcome({
   onRetry: () => void;
   history?: boolean;
 }) {
+  const presentation = PLATFORM_PRESENTATION[job.platform];
   const successMessage = successMessageFor(job);
   return <>
+    {job.status === "uploading" && presentation.uploadingMessage && (
+      <span className="text-zinc-600 dark:text-zinc-400">
+        {presentation.uploadingMessage}
+      </span>
+    )}
     {job.status === "done" && (
       <>
-        {job.resultUrl && job.platform !== "tiktok" && (
+        {job.resultUrl && presentation.linkResult && (
           <a href={job.resultUrl} className="truncate text-blue-600 underline dark:text-blue-400">
             {history ? "View published video" : job.resultUrl}
           </a>
@@ -234,9 +276,10 @@ export default function Home() {
       setFileIssue("Use an MP4, WebM, or MOV video file.");
       return;
     }
-    const platformIssue = tiktok?.connected
-      ? uploadPolicyViolation(candidate, ["tiktok"])
-      : null;
+    const platformIssue = uploadPolicyViolation(
+      candidate,
+      uploadPolicyPlatforms(tiktok, instagram),
+    );
     if (platformIssue) {
       setFileIssue(`${platformIssue}.`);
       return;
@@ -295,9 +338,10 @@ export default function Home() {
     if (!file || fileIssue || checkingFile || submitLockRef.current) {
       return;
     }
-    const platformIssue = tiktok?.connected
-      ? uploadPolicyViolation(file, ["tiktok"])
-      : null;
+    const platformIssue = uploadPolicyViolation(
+      file,
+      uploadPolicyPlatforms(tiktok, instagram),
+    );
     if (platformIssue) {
       setFileIssue(`${platformIssue}.`);
       return;

@@ -131,6 +131,31 @@ describe("JobOutcome", () => {
     expect(html).toContain("TikTok needs to be reconnected");
     expect(html).not.toContain("YouTube needs");
   });
+
+  it("renders Instagram processing in the unified job outcome", () => {
+    const html = renderToStaticMarkup(createElement(JobOutcome, {
+      job: { id: "job-3", platform: "instagram", status: "uploading", resultUrl: null, error: null },
+      onRetry: () => {},
+    }));
+    expect(html).toContain("Instagram is fetching and processing your Reel");
+  });
+
+  it("renders a completed Instagram media reference without a custom-scheme link", () => {
+    const html = renderToStaticMarkup(createElement(JobOutcome, {
+      job: { id: "job-4", platform: "instagram", status: "done", resultUrl: "instagram://media/media-456", error: null },
+      onRetry: () => {},
+    }));
+    expect(html).toContain("Published to Instagram (media media-456)");
+    expect(html).not.toContain("href=");
+  });
+
+  it("renders actionable Instagram reconnect guidance", () => {
+    const html = renderToStaticMarkup(createElement(JobOutcome, {
+      job: { id: "job-5", platform: "instagram", status: "failed", resultUrl: null, error: "Instagram connection needs reconnecting" },
+      onRetry: () => {},
+    }));
+    expect(html).toContain("Instagram needs to be reconnected");
+  });
 });
 
 describe("transferPercent", () => {

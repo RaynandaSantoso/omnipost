@@ -80,7 +80,7 @@ describe("POST /api/uploads", () => {
     expect(upload?.jobs[0].status).toBe("pending");
   });
 
-  it("fans out to connected platforms only after their adapter is registered", async () => {
+  it("fans one upload out to connected YouTube, TikTok, and Instagram jobs", async () => {
     const { POST } = await import("@/app/api/uploads/route");
     const { prisma, ensureSeedUser } = await import("@/lib/db");
     const { encryptToken } = await import("@/lib/token-crypto");
@@ -124,7 +124,7 @@ describe("POST /api/uploads", () => {
 
     expect(response.status).toBe(201);
     expect((await response.json()).jobs.map((job: { platform: string }) => job.platform).sort())
-      .toEqual(["tiktok", "youtube"]);
+      .toEqual(["instagram", "tiktok", "youtube"]);
   });
 
   it("rejects an oversized explicit TikTok upload before saving the file", async () => {
@@ -179,11 +179,8 @@ describe("POST /api/uploads", () => {
     expect((await response.json()).jobs[0].platform).toBe("dry-run");
   });
 
-  it("rejects an unregistered platform with a 400 naming the invalid value, before creating anything", async () => {
+  it("accepts Instagram as an explicit registered platform", async () => {
     const { POST } = await import("@/app/api/uploads/route");
-    const { prisma } = await import("@/lib/db");
-    const countBefore = await prisma.upload.count();
-
     const response = await POST(uploadRequest({
       video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
       title: "My Short",
@@ -191,9 +188,41 @@ describe("POST /api/uploads", () => {
       platform: "instagram",
     }));
 
+    expect(response.status).toBe(201);
+    expect((await response.json()).jobs[0].platform).toBe("instagram");
+  });
+
+  it("rejects an Instagram upload whose container is not MP4 or MOV", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const response = await POST(uploadRequest({
+      video: new File(["webm bytes"], "clip.webm", { type: "video/webm" }),
+      title: "My Reel",
+      description: "A short clip",
+      platform: "instagram",
+    }));
+
     expect(response.status).toBe(400);
-    expect((await response.json()).error).toContain("instagram");
-    await expect(prisma.upload.count()).resolves.toBe(countBefore);
+    expect((await response.json()).error).toContain("MP4 or MOV");
+  });
+
+  it("rejects an Instagram video above the Reels size limit before saving", async () => {
+    const { createUpload } = await import("@/lib/uploads");
+    const { ensureSeedUser } = await import("@/lib/db");
+    const user = await ensureSeedUser();
+    const oversizedFile = {
+      name: "large.mp4",
+      type: "video/mp4",
+      size: 1024 * 1024 * 1024 + 1,
+      arrayBuffer: () => { throw new Error("file should not be read"); },
+    } as unknown as File;
+
+    await expect(createUpload({
+      userId: user.id,
+      title: "Large Reel",
+      description: "",
+      file: oversizedFile,
+      platform: "instagram",
+    })).rejects.toThrow("1 GB");
   });
 
   it("honors an explicit, registered platform instead of auto-selecting", async () => {

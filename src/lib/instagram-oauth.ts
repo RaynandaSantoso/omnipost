@@ -26,6 +26,26 @@ type InstagramAccount = {
   pageAccessToken: string;
 };
 
+export class InstagramCredentialFailure extends Error {
+  constructor(
+    message: string,
+    readonly kind: "retryable" | "reconnect",
+  ) {
+    super(message);
+    this.name = "InstagramCredentialFailure";
+  }
+}
+
+function credentialFailureForResponse(response: Response): InstagramCredentialFailure {
+  const retryable = response.status === 429 || response.status >= 500;
+  return new InstagramCredentialFailure(
+    retryable
+      ? "Meta is temporarily unavailable while renewing Instagram credentials"
+      : "Instagram connection needs reconnecting.",
+    retryable ? "retryable" : "reconnect",
+  );
+}
+
 function getValidatedInstagramOAuthConfig() {
   const config = getConfig();
   const required = [
@@ -80,10 +100,22 @@ async function exchangeForLongLivedUserToken(
     client_secret: config.INSTAGRAM_APP_SECRET,
     fb_exchange_token: userToken,
   }).toString();
-  const response = await fetch(url);
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch {
+    throw new InstagramCredentialFailure(
+      "Meta could not be reached while renewing Instagram credentials",
+      "retryable",
+    );
+  }
   const token = (await json(response)) as TokenResponse | null;
   if (!response.ok || !token?.access_token || !token.expires_in) {
-    throw new Error("Meta could not renew the Instagram connection");
+    if (!response.ok) throw credentialFailureForResponse(response);
+    throw new InstagramCredentialFailure(
+      "Meta returned incomplete renewed Instagram credentials",
+      "retryable",
+    );
   }
   return { access_token: token.access_token, expires_in: token.expires_in };
 }
@@ -98,9 +130,17 @@ async function findProfessionalAccount(
     "access_token,instagram_business_account{id,username}",
   );
   while (url) {
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${userToken}` },
-    });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        headers: { Authorization: `Bearer ${userToken}` },
+      });
+    } catch {
+      throw new InstagramCredentialFailure(
+        "Meta could not be reached while reading the Instagram account",
+        "retryable",
+      );
+    }
     const body = (await json(response)) as {
       data?: Array<{
         access_token?: string;
@@ -109,7 +149,7 @@ async function findProfessionalAccount(
       paging?: { next?: string };
     } | null;
     if (!response.ok) {
-      throw new Error("Meta could not read the connected Instagram account");
+      throw credentialFailureForResponse(response);
     }
     const accounts = (body?.data ?? []).flatMap((page) => {
       const account = page.instagram_business_account;
@@ -279,11 +319,32 @@ export async function accessTokenForInstagram(userId: string): Promise<string> {
       },
     });
     return account.pageAccessToken;
-  } catch {
+  } catch (error) {
+    if (error instanceof InstagramCredentialFailure && error.kind === "retryable") {
+      throw error;
+    }
     await prisma.platformConnection.update({
       where: { id: connection.id },
       data: { refreshError: "Instagram connection needs reconnecting." },
     });
+    throw new InstagramCredentialFailure(
+      "Instagram connection needs reconnecting.",
+      "reconnect",
+    );
+  }
+}
+
+export async function instagramPublishingCredentials(userId: string): Promise<{
+  accessToken: string;
+  accountId: string;
+}> {
+  const accessToken = await accessTokenForInstagram(userId);
+  const connection = await prisma.platformConnection.findUnique({
+    where: { userId_platform: { userId, platform: INSTAGRAM_PLATFORM } },
+    select: { externalAccountId: true },
+  });
+  if (!connection?.externalAccountId) {
     throw new Error("Instagram connection needs reconnecting.");
   }
+  return { accessToken, accountId: connection.externalAccountId };
 }

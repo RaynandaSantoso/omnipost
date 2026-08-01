@@ -2,7 +2,6 @@ import { prisma } from "@/lib/db";
 import { saveUploadFile } from "@/lib/storage";
 import { platformSchema, type Platform } from "@/lib/platform";
 import { uploadPolicyViolation } from "@/lib/platform-upload-policy";
-import { hasRegisteredAdapter } from "@/lib/adapters/registry";
 
 export class UploadValidationError extends Error {}
 
@@ -21,7 +20,7 @@ async function selectedPlatforms(userId: string): Promise<Platform[]> {
   });
   const platforms = connections.flatMap((connection) => {
     const parsed = platformSchema.safeParse(connection.platform);
-    return parsed.success && hasRegisteredAdapter(parsed.data) ? [parsed.data] : [];
+    return parsed.success ? [parsed.data] : [];
   });
   return platforms.length > 0 ? platforms : ["dry-run"];
 }

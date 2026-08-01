@@ -4,12 +4,20 @@ interface PlatformUploadPolicy {
   maxFileSizeBytes?: number;
   oversizeMessage?: string;
   requireMatchingVideoExtension?: boolean;
+  allowedVideoExtensions?: readonly string[];
+  unsupportedFormatMessage?: string;
 }
 
 const PLATFORM_UPLOAD_POLICIES = {
   "dry-run": {},
   youtube: {},
-  instagram: {},
+  instagram: {
+    allowedVideoExtensions: ["mp4", "mov"],
+    maxFileSizeBytes: 1024 * 1024 * 1024,
+    oversizeMessage: "Instagram Reels must be 1 GB or smaller",
+    unsupportedFormatMessage: "Instagram Reels must use an MP4 or MOV video file",
+    requireMatchingVideoExtension: true,
+  },
   tiktok: {
     maxFileSizeBytes: 64 * 1024 * 1024,
     oversizeMessage: "TikTok whole-file uploads must be 64 MB or smaller",
@@ -33,8 +41,14 @@ export function uploadPolicyViolation(
 ): string | null {
   for (const platform of platforms) {
     const policy = uploadPolicyFor(platform);
+    const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+    if (
+      policy.allowedVideoExtensions &&
+      !policy.allowedVideoExtensions.includes(extension)
+    ) {
+      return policy.unsupportedFormatMessage ?? "The video format is not supported by this platform";
+    }
     if (policy.requireMatchingVideoExtension) {
-      const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
       const expectedType = VIDEO_TYPE_BY_EXTENSION[extension];
       if (!expectedType) return "Use an MP4, WebM, or MOV video file";
       if (file.type && file.type !== expectedType) {

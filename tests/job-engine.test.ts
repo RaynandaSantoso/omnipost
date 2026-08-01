@@ -113,7 +113,11 @@ describe("job engine", () => {
     const upload = await prisma.upload.create({
       data: {
         userId: user.id, title: "My Short", description: "A short clip", fileName: "clip.mp4", filePath: "/tmp/clip.mp4", fileSize: 1024,
-        jobs: { create: [{ platform: "youtube", status: "pending" }, { platform: "tiktok", status: "pending" }] },
+        jobs: { create: [
+          { platform: "youtube", status: "pending" },
+          { platform: "tiktok", status: "pending" },
+          { platform: "instagram", status: "pending" },
+        ] },
       },
       include: { jobs: true },
     });
@@ -127,7 +131,62 @@ describe("job engine", () => {
     await engine.tick();
 
     const jobs = await prisma.job.findMany({ where: { uploadId: upload.id }, orderBy: { platform: "asc" } });
-    expect(jobs.map((job) => job.status)).toEqual(["failed", "done"]);
+    expect(jobs.map((job) => [job.platform, job.status])).toEqual([
+      ["instagram", "done"],
+      ["tiktok", "failed"],
+      ["youtube", "done"],
+    ]);
+  });
+
+  it("lets direct-upload jobs finish while Instagram is still polling", async () => {
+    const { createJobEngine } = await import("@/lib/job-engine");
+    const { prisma, ensureSeedUser } = await import("@/lib/db");
+    const user = await ensureSeedUser();
+    const upload = await prisma.upload.create({
+      data: {
+        userId: user.id,
+        title: "My Short",
+        description: "A short clip",
+        fileName: "clip.mp4",
+        filePath: "/tmp/clip.mp4",
+        fileSize: 1024,
+        jobs: {
+          create: [
+            { platform: "instagram", status: "pending" },
+            { platform: "youtube", status: "pending" },
+            { platform: "tiktok", status: "pending" },
+          ],
+        },
+      },
+    });
+    let finishInstagram!: () => void;
+    let instagramStarted!: () => void;
+    const started = new Promise<void>((resolve) => { instagramStarted = resolve; });
+    const polling = new Promise<void>((resolve) => { finishInstagram = resolve; });
+    const engine = createJobEngine({
+      resolveAdapter: (platform) => adapterOf(async () => {
+        if (platform === "instagram") {
+          instagramStarted();
+          await polling;
+          return { url: "instagram://media/1" };
+        }
+        return { url: `https://example.test/${platform}/1` };
+      }),
+    });
+
+    const tick = engine.tick();
+    await started;
+    try {
+      await vi.waitFor(async () => {
+        const directJobs = await prisma.job.findMany({
+          where: { uploadId: upload.id, platform: { in: ["youtube", "tiktok"] } },
+        });
+        expect(directJobs.map((job) => job.status).sort()).toEqual(["done", "done"]);
+      }, { timeout: 250 });
+    } finally {
+      finishInstagram();
+      await tick;
+    }
   });
 
   it("leaves a leased job alone until its lease expires", async () => {

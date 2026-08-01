@@ -54,6 +54,8 @@ export const UNTRACKED_TRANSFER: TransferTracker = {
 };
 
 export interface UploadMetadata {
+  /** Durable Upload identity when an adapter needs an app-owned callback URL. */
+  uploadId?: string;
   userId: string;
   title: string;
   description: string;
