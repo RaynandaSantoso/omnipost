@@ -106,6 +106,50 @@ describe("job engine", () => {
     expect(job.attempts).toBe(1);
   });
 
+  it("supplies each adapter with that Job's resolved metadata snapshot", async () => {
+    const { createJobEngine } = await import("@/lib/job-engine");
+    const { prisma, ensureSeedUser } = await import("@/lib/db");
+    const user = await ensureSeedUser();
+    await prisma.upload.create({
+      data: {
+        userId: user.id,
+        title: "Shared title",
+        description: "Shared description",
+        fileName: "clip.mp4",
+        filePath: "/tmp/clip.mp4",
+        fileSize: 1024,
+        jobs: {
+          create: [
+            {
+              platform: "youtube",
+              status: "pending",
+              titleOverride: "YouTube title",
+              descriptionOverride: "YouTube description",
+            },
+            { platform: "instagram", status: "pending" },
+          ],
+        },
+      },
+    });
+    const received = new Map<string, Pick<UploadMetadata, "title" | "description">>();
+    const engine = createJobEngine({
+      resolveAdapter: (platform) => adapterOf(async (metadata) => {
+        received.set(platform, {
+          title: metadata.title,
+          description: metadata.description,
+        });
+        return { url: `https://example.test/${platform}` };
+      }),
+    });
+
+    await engine.tick();
+
+    expect(Object.fromEntries(received)).toEqual({
+      youtube: { title: "YouTube title", description: "YouTube description" },
+      instagram: { title: "Shared title", description: "Shared description" },
+    });
+  });
+
   it("finishes one platform job when another platform job fails", async () => {
     const { createJobEngine } = await import("@/lib/job-engine");
     const { prisma, ensureSeedUser } = await import("@/lib/db");

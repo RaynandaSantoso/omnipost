@@ -1,8 +1,47 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { ensureSeedUser, prisma } from "@/lib/db";
 import { createUpload, UploadValidationError } from "@/lib/uploads";
 import { platformSchema, type Platform } from "@/lib/platform";
 import { logError } from "@/lib/log";
+import type { PlatformTextOverrides } from "@/lib/platform-upload-policy";
+
+const textOverrideSchema = z.object({
+  title: z.string().optional(),
+  description: z.string().optional(),
+}).strict();
+
+function overridesFrom(formData: FormData): PlatformTextOverrides | NextResponse {
+  const raw = formData.get("overrides");
+  if (raw === null) return {};
+  if (typeof raw !== "string") {
+    return NextResponse.json({ error: "overrides must be JSON text" }, { status: 400 });
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return NextResponse.json({ error: "overrides must be valid JSON" }, { status: 400 });
+  }
+  const record = z.record(z.string(), textOverrideSchema).safeParse(value);
+  if (!record.success) {
+    return NextResponse.json({ error: "overrides must map platforms to text fields" }, { status: 400 });
+  }
+
+  const overrides: PlatformTextOverrides = {};
+  for (const [valuePlatform, override] of Object.entries(record.data)) {
+    const parsedPlatform = platformSchema.safeParse(valuePlatform);
+    if (!parsedPlatform.success) {
+      return NextResponse.json(
+        { error: `unsupported override platform "${valuePlatform}"` },
+        { status: 400 },
+      );
+    }
+    overrides[parsedPlatform.data] = override;
+  }
+  return overrides;
+}
 
 export async function GET() {
   try {
@@ -82,9 +121,12 @@ export async function POST(request: Request) {
     platform = parsed.data;
   }
 
+  const overrides = overridesFrom(formData);
+  if (overrides instanceof NextResponse) return overrides;
+
   try {
     const user = await ensureSeedUser();
-    const upload = await createUpload({ userId: user.id, title, description, file, platform });
+    const upload = await createUpload({ userId: user.id, title, description, file, platform, overrides });
 
     return NextResponse.json(
       {

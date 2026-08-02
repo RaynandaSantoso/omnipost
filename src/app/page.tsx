@@ -2,7 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Platform } from "@/lib/platform";
-import { outboundTextFor, uploadPolicyViolation } from "@/lib/platform-upload-policy";
+import {
+  outboundTextFor,
+  uploadPolicyViolation,
+  type AuthoredText,
+  type PlatformTextOverride,
+  type PlatformTextOverrides,
+} from "@/lib/platform-upload-policy";
+import { resolveJobMetadata } from "@/lib/job-metadata";
 
 interface JobView {
   id: string;
@@ -174,22 +181,30 @@ export function OutboundTextPreview({
   platforms,
   title,
   description,
+  overrides = {},
 }: {
   platforms: Platform[];
   title: string;
   description: string;
+  overrides?: PlatformTextOverrides;
 }) {
   return (
     <section aria-label="Outbound text preview" className="flex flex-col gap-2">
       <p className="text-sm font-medium text-black dark:text-zinc-50">
         Outbound text preview
       </p>
-      {platforms.map((platform) => (
-        <div key={platform} className="rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800">
+      {platforms.map((platform) => {
+        const override = overrides[platform];
+        const resolved = resolveJobMetadata({
+          platform,
+          titleOverride: override?.title ?? null,
+          descriptionOverride: override?.description ?? null,
+        }, { title, description });
+        return <div key={platform} className="rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800">
           <p className="font-medium text-black dark:text-zinc-50">
             {PLATFORM_PRESENTATION[platform].name}
           </p>
-          {outboundTextFor(platform, { title, description }).map((field) => (
+          {outboundTextFor(platform, resolved).map((field) => (
             <div key={field.key} className="mt-2">
               <div className="flex justify-between gap-2 text-xs text-zinc-500 dark:text-zinc-400">
                 <span>{field.label}</span>
@@ -200,8 +215,103 @@ export function OutboundTextPreview({
               </output>
             </div>
           ))}
-        </div>
-      ))}
+        </div>;
+      })}
+    </section>
+  );
+}
+
+export function overrideDraftFor(
+  platform: Platform,
+  authored: AuthoredText,
+): PlatformTextOverride {
+  const draft: PlatformTextOverride = {};
+  for (const field of outboundTextFor(platform, authored)) {
+    if (field.key === "description") draft.description = field.value;
+    else draft.title = field.value;
+  }
+  return draft;
+}
+
+export function PlatformOverrideEditors({
+  platforms,
+  title,
+  description,
+  overrides,
+  onChange,
+}: {
+  platforms: Platform[];
+  title: string;
+  description: string;
+  overrides: PlatformTextOverrides;
+  onChange: (platform: Platform, override: PlatformTextOverride | null) => void;
+}) {
+  const authored = { title, description };
+  return (
+    <section aria-label="Per-platform text overrides" className="flex flex-col gap-2">
+      <p className="text-sm font-medium text-black dark:text-zinc-50">
+        Customize by platform
+      </p>
+      {platforms.map((platform) => {
+        const override = overrides[platform];
+        const fields = outboundTextFor(platform, authored);
+        return (
+          <details key={platform} className="rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800">
+            <summary className="flex cursor-pointer justify-between gap-2 font-medium text-black dark:text-zinc-50">
+              <span>{PLATFORM_PRESENTATION[platform].name}</span>
+              <span className={override ? "text-blue-600 dark:text-blue-400" : "text-zinc-500 dark:text-zinc-400"}>
+                {override ? "Overridden" : "Shared"}
+              </span>
+            </summary>
+            <div className="mt-3 flex flex-col gap-3">
+              {override ? fields.map((field) => {
+                const property = field.key === "description" ? "description" : "title";
+                const value = override[property] ?? "";
+                const editorProps = {
+                  name: `overrides.${platform}.${property}`,
+                  value,
+                  onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+                    onChange(platform, { ...override, [property]: event.target.value }),
+                  className: "rounded-md border border-zinc-300 bg-white px-3 py-2 text-black outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50",
+                };
+                return (
+                  <label key={field.key} className="flex flex-col gap-1">
+                    <span className="text-xs text-zinc-500 dark:text-zinc-400">{field.label}</span>
+                    {field.key === "title"
+                      ? <input type="text" {...editorProps} />
+                      : <textarea rows={3} {...editorProps} />}
+                  </label>
+                );
+              }) : (
+                <>
+                  {fields.map((field) => (
+                    <div key={field.key}>
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400">{field.label}</p>
+                      <output className="mt-1 block whitespace-pre-wrap text-black dark:text-zinc-50">{field.value}</output>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => onChange(platform, overrideDraftFor(platform, authored))}
+                    className="w-fit rounded border border-zinc-300 px-2 py-1 text-black dark:border-zinc-700 dark:text-zinc-50"
+                  >
+                    Customize
+                  </button>
+                </>
+              )}
+              {override && (
+                <button
+                  type="button"
+                  onClick={() => onChange(platform, null)}
+                  className="w-fit rounded border border-zinc-300 px-2 py-1 text-black dark:border-zinc-700 dark:text-zinc-50"
+                >
+                  Clear override
+                </button>
+              )}
+            </div>
+          </details>
+        );
+      })}
     </section>
   );
 }
@@ -210,6 +320,7 @@ export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [overrides, setOverrides] = useState<PlatformTextOverrides>({});
   const [dragging, setDragging] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -396,6 +507,9 @@ export default function Home() {
     body.set("video", file);
     body.set("title", title);
     body.set("description", description);
+    if (Object.keys(overrides).length > 0) {
+      body.set("overrides", JSON.stringify(overrides));
+    }
 
     try {
       const data = await sendUpload(body);
@@ -584,6 +698,22 @@ export default function Home() {
             platforms={uploadTargetPlatforms(youtube, tiktok, instagram)}
             title={title}
             description={description}
+            overrides={overrides}
+          />
+
+          <PlatformOverrideEditors
+            platforms={uploadTargetPlatforms(youtube, tiktok, instagram)}
+            title={title}
+            description={description}
+            overrides={overrides}
+            onChange={(platform, override) => {
+              setOverrides((current) => {
+                const next = { ...current };
+                if (override === null) delete next[platform];
+                else next[platform] = override;
+                return next;
+              });
+            }}
           />
 
           {error && (

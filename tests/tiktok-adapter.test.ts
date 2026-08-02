@@ -103,6 +103,59 @@ describe("TikTokAdapter", () => {
     expect(statusRequests).toBe(1);
   });
 
+  it("publishes a finished caption override without appending the shared description", async () => {
+    const user = await connectedUser();
+    const { prisma } = await import("@/lib/db");
+    const upload = await prisma.upload.create({
+      data: {
+        userId: user.id,
+        title: "Shared title",
+        description: "Shared description",
+        fileName: "clip.mp4",
+        filePath: videoPath,
+        fileSize: 11,
+        jobs: {
+          create: {
+            platform: "tiktok",
+            status: "pending",
+            titleOverride: "Finished caption #shorts",
+          },
+        },
+      },
+      include: { jobs: true },
+    });
+    uploadServer.use(
+      http.post(initUrl, async ({ request }) => {
+        await expect(request.json()).resolves.toMatchObject({
+          post_info: { title: "Finished caption #shorts" },
+        });
+        return HttpResponse.json({
+          data: {
+            publish_id: "publish-override",
+            upload_url: "https://upload.tiktok.test/video/override",
+          },
+          error: { code: "ok" },
+        });
+      }),
+      http.put("https://upload.tiktok.test/video/override", () =>
+        new HttpResponse(null, { status: 201 }),
+      ),
+      http.post(statusUrl, () => HttpResponse.json({
+        data: { status: "PUBLISH_COMPLETE" },
+        error: { code: "ok" },
+      })),
+    );
+    const { createJobEngine } = await import("@/lib/job-engine");
+
+    await createJobEngine().tick();
+
+    const job = await prisma.job.findUniqueOrThrow({
+      where: { id: upload.jobs[0].id },
+    });
+    expect(job.status).toBe("done");
+    expect(job.resultUrl).toBe("tiktok://publish/publish-override");
+  });
+
   it.each([429, 500])("classifies TikTok %i responses as retryable", async (status) => {
     const user = await connectedUser();
     uploadServer.use(http.post(initUrl, () => HttpResponse.json({ error: {} }, { status })));

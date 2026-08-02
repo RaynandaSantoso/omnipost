@@ -1,7 +1,12 @@
 import { prisma } from "@/lib/db";
 import { saveUploadFile } from "@/lib/storage";
 import { platformSchema, type Platform } from "@/lib/platform";
-import { uploadPolicyViolation } from "@/lib/platform-upload-policy";
+import {
+  uploadPolicyFor,
+  uploadPolicyViolation,
+  type PlatformTextOverride,
+  type PlatformTextOverrides,
+} from "@/lib/platform-upload-policy";
 
 export class UploadValidationError extends Error {}
 
@@ -31,6 +36,7 @@ export async function createUpload(params: {
   description: string;
   file: File;
   platform?: Platform;
+  overrides?: PlatformTextOverrides;
 }) {
   const { userId, title, description, file } = params;
   // An explicit platform overrides auto-selection outright, including
@@ -38,6 +44,22 @@ export async function createUpload(params: {
   // app is single-tenant, and the resulting job just fails terminally with
   // a clear "needs reconnecting" error, same as any other disconnect).
   const platforms = params.platform ? [params.platform] : await selectedPlatforms(userId);
+  const overrides = params.overrides ?? {};
+  for (const [platform, override] of Object.entries(overrides) as [Platform, PlatformTextOverride][]) {
+    if (!platforms.includes(platform)) {
+      throw new UploadValidationError(
+        `metadata override target "${platform}" is not included in this upload`,
+      );
+    }
+    if (
+      uploadPolicyFor(platform).text.kind === "caption" &&
+      override.description !== undefined
+    ) {
+      throw new UploadValidationError(
+        `${platform} accepts one finished caption override, not a separate description`,
+      );
+    }
+  }
   validateVideoFile(file, platforms);
   const { filePath, fileName, fileSize } = await saveUploadFile(file);
 
@@ -50,7 +72,12 @@ export async function createUpload(params: {
       filePath,
       fileSize,
       jobs: {
-        create: platforms.map((platform) => ({ platform, status: "pending" })),
+        create: platforms.map((platform) => ({
+          platform,
+          status: "pending",
+          titleOverride: overrides[platform]?.title ?? null,
+          descriptionOverride: overrides[platform]?.description ?? null,
+        })),
       },
     },
     include: { jobs: true },

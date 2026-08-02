@@ -5,6 +5,13 @@ export interface AuthoredText {
   description: string;
 }
 
+export interface PlatformTextOverride {
+  title?: string;
+  description?: string;
+}
+
+export type PlatformTextOverrides = Partial<Record<Platform, PlatformTextOverride>>;
+
 interface TitleAndDescriptionTextShape {
   kind: "title-and-description";
   titleMaxLength: number | null;

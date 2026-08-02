@@ -11,6 +11,7 @@ import {
 import { JOB_POLICY_DEFAULTS, type JobPolicy } from "@/lib/job-policy";
 import { logError } from "@/lib/log";
 import { JOB_STATUS } from "@/lib/job-status";
+import { resolveJobMetadata } from "@/lib/job-metadata";
 
 // The durable job engine. Jobs are rows in SQLite and the database is the
 // only source of truth: a worker claims a job by writing a time-bounded
@@ -187,6 +188,8 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
       id: string;
       platform: string;
       attempts: number;
+      titleOverride: string | null;
+      descriptionOverride: string | null;
       upload: Omit<UploadMetadata, "transfer"> & { id: string };
     },
     lease: string,
@@ -203,8 +206,10 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
 
     try {
       const adapter = resolveAdapter(job.platform);
+      const resolved = resolveJobMetadata(job, job.upload);
       const result = await adapter.upload({
         ...job.upload,
+        ...resolved,
         uploadId: job.upload.id,
         transfer: transferTrackerFor(job, lease),
       });

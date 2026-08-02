@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
-import { instagramConnectionStatusText, JobOutcome, OutboundTextPreview, tiktokConnectionStatusText, transferPercent, youtubeConnectionStatusText } from "@/app/page";
+import { instagramConnectionStatusText, JobOutcome, OutboundTextPreview, overrideDraftFor, PlatformOverrideEditors, tiktokConnectionStatusText, transferPercent, youtubeConnectionStatusText } from "@/app/page";
 
 describe("youtubeConnectionStatusText", () => {
   it("renders the label when connected and labeled", () => {
@@ -201,5 +201,61 @@ describe("OutboundTextPreview", () => {
     expect(html.match(/>Description</g)).toHaveLength(1);
     expect(html.match(/>Caption</g)).toHaveLength(2);
     expect(html.match(/My Short\nA short clip/g)).toHaveLength(2);
+  });
+
+  it("shows override-resolved outbound text instead of stale shared text", () => {
+    const html = renderToStaticMarkup(createElement(OutboundTextPreview, {
+      platforms: ["youtube", "tiktok"],
+      title: "Shared title",
+      description: "Shared description",
+      overrides: {
+        youtube: { title: "YouTube title", description: "YouTube description" },
+        tiktok: { title: "Finished TikTok caption" },
+      },
+    }));
+
+    expect(html).toContain("YouTube title");
+    expect(html).toContain("YouTube description");
+    expect(html).toContain("Finished TikTok caption");
+    expect(html).not.toContain("Finished TikTok caption\nShared description");
+  });
+});
+
+describe("PlatformOverrideEditors", () => {
+  it("starts shape-aware drafts from the exact shared outbound text", () => {
+    const shared = { title: "Shared title", description: "Shared description" };
+
+    expect(overrideDraftFor("youtube", shared)).toEqual({
+      title: "Shared title",
+      description: "Shared description",
+    });
+    expect(overrideDraftFor("tiktok", shared)).toEqual({
+      title: "Shared title\nShared description",
+    });
+    expect(overrideDraftFor("instagram", shared)).toEqual({
+      title: "Shared title\nShared description",
+    });
+  });
+
+  it("renders collapsed editors and distinguishes shared from overridden targets", () => {
+    const html = renderToStaticMarkup(createElement(PlatformOverrideEditors, {
+      platforms: ["youtube", "tiktok", "instagram"],
+      title: "Shared title",
+      description: "Shared description",
+      overrides: {
+        youtube: { title: "YouTube title", description: "YouTube description" },
+      },
+      onChange: () => {},
+    }));
+
+    expect(html).not.toContain("<details open");
+    expect(html.match(/>Shared</g)).toHaveLength(2);
+    expect(html.match(/>Overridden</g)).toHaveLength(1);
+    expect(html.match(/>Customize</g)).toHaveLength(2);
+    expect(html).toContain("Clear override");
+    expect(html).toContain('name="overrides.youtube.title"');
+    expect(html).toContain('value="YouTube title"');
+    expect(html).toContain('name="overrides.youtube.description"');
+    expect(html).toContain(">YouTube description</textarea>");
   });
 });

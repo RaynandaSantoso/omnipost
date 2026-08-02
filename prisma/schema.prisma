@@ -81,6 +81,10 @@ model Job {
   status    String   @default("pending")
   resultUrl String?
   error     String?
+  // Optional per-platform authored text. Null means the Job inherits the
+  // corresponding shared value from its Upload.
+  titleOverride       String?
+  descriptionOverride String?
   // Retry bookkeeping. attempts counts claims, not failures, so a worker
   // that crashes mid-upload burns an attempt too and a poisoned job can
   // never be reclaimed forever.

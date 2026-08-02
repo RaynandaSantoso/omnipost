@@ -25,13 +25,19 @@ Single-context repo. See `docs/adr/` for the decisions behind these terms.
   own opaque id — and `externalAccountLabel`, a human-readable handle
   shown in the UI instead of the raw id).
 - **Upload** — one user-initiated publish action: the source video file,
-  plus the title/description shared across every platform it fans out to
-  (until per-platform overrides land — see roadmap).
+  plus the shared title/description defaults for every platform it fans out
+  to. A Job may override either value without changing these defaults.
 - **Job** — one unit of background work: one Upload to one Platform. An
   Upload fans out to one Job per target platform. Carries `status`,
   `attempts`, `nextAttemptAt`, lease fields (`leaseOwner`,
   `leaseExpiresAt`) that make crash recovery possible, and transfer state
   (`uploadSessionUrl`, `bytesUploaded`).
+  It may also carry nullable `titleOverride`/`descriptionOverride` values;
+  null means inherit the corresponding shared value from its Upload.
+- **Resolved metadata** — the final title/description snapshot supplied to a
+  PlatformAdapter after a Job's overrides are combined with its Upload's
+  shared defaults. Caption-only overrides are already-finished captions, so
+  resolution clears the description instead of composing it a second time.
 - **Lease** — a time-bounded claim a background worker holds on a Job
   while working it, renewed by heartbeat. An expired lease is what makes
   a job reclaimable after a crash, rather than stuck forever.
