@@ -27,8 +27,8 @@ function metadataView(job: JobWithUpload) {
     platform: job.platform,
     status: job.status,
     ...metadata,
-    source: metadata.metadataSource,
-    effective: metadata.effectiveMetadata,
+    source: metadata.overrideSource,
+    effective: metadata.savedMetadata,
     appliesTo: metadata.metadataAppliesTo,
   };
 }

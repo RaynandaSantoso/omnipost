@@ -121,6 +121,8 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
       });
       if (!current) return null;
       const metadata = resolveJobMetadata(current, current.upload);
+      const resolvedFromOverride =
+        current.titleOverride !== null || current.descriptionOverride !== null;
       const claimed = await transaction.job.updateMany({
         where: { id: jobId, ...runnableWhere(now) },
         data: {
@@ -129,6 +131,9 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
           leaseExpiresAt: new Date(now.getTime() + leaseMs),
           attempts: { increment: 1 },
           nextAttemptAt: null,
+          resolvedTitle: metadata.title,
+          resolvedDescription: metadata.description,
+          resolvedFromOverride,
         },
       });
       return claimed.count === 1 ? { lease, metadata } : null;

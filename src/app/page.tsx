@@ -23,7 +23,9 @@ interface JobView {
   titleOverride?: string | null;
   descriptionOverride?: string | null;
   metadataSource?: "shared" | "overridden";
+  overrideSource?: "shared" | "overridden";
   effectiveMetadata?: AuthoredText;
+  savedMetadata?: AuthoredText;
   metadataAppliesTo?: "next-attempt" | "future-attempt";
 }
 
@@ -323,6 +325,18 @@ export function PlatformOverrideEditors({
   );
 }
 
+function MetadataSourceBadge({
+  source,
+}: {
+  source: "shared" | "overridden" | undefined;
+}) {
+  return (
+    <span className={source === "overridden" ? "text-blue-600 dark:text-blue-400" : "text-zinc-500 dark:text-zinc-400"}>
+      {source === "overridden" ? "Overridden" : "Shared"}
+    </span>
+  );
+}
+
 export function JobMetadataEditor({
   job,
   onSave,
@@ -331,7 +345,8 @@ export function JobMetadataEditor({
   onSave: (title: string | null, description: string | null) => void | Promise<void>;
 }) {
   const shape = uploadPolicyFor(job.platform).text;
-  const effectiveMetadata = job.effectiveMetadata ?? { title: "", description: "" };
+  const overrideSource = job.overrideSource ?? job.metadataSource;
+  const effectiveMetadata = job.savedMetadata ?? job.effectiveMetadata ?? { title: "", description: "" };
   const effectiveTitle = shape.kind === "caption"
     ? outboundTextFor(job.platform, effectiveMetadata)[0].value
     : effectiveMetadata.title;
@@ -356,9 +371,7 @@ export function JobMetadataEditor({
     <details className="mt-2 rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
       <summary className="flex cursor-pointer justify-between gap-2">
         <span>Edit platform text</span>
-        <span className={job.metadataSource === "overridden" ? "text-blue-600 dark:text-blue-400" : "text-zinc-500 dark:text-zinc-400"}>
-          {job.metadataSource === "overridden" ? "Overridden" : "Shared"}
-        </span>
+        <MetadataSourceBadge source={overrideSource} />
       </summary>
       <form
         className="mt-3 flex flex-col gap-3"
@@ -413,7 +426,7 @@ export function JobMetadataEditor({
           <button type="submit" disabled={saving} className="rounded border border-zinc-300 px-2 py-1 text-black disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50">
             {saving ? "Saving..." : "Save override"}
           </button>
-          {job.metadataSource === "overridden" && (
+          {overrideSource === "overridden" && (
             <button
               type="button"
               disabled={saving}
@@ -426,6 +439,69 @@ export function JobMetadataEditor({
         </div>
       </form>
     </details>
+  );
+}
+
+export function JobMetadataAudit({ job }: { job: JobView }) {
+  if (!job.effectiveMetadata || !job.metadataSource) return null;
+  const fields = outboundTextFor(job.platform, job.effectiveMetadata);
+  return (
+    <section aria-label={`${job.platform} resolved metadata`} className="mt-2 rounded-md bg-zinc-100 px-3 py-2 dark:bg-zinc-900">
+      <div className="flex justify-between gap-2 text-xs">
+        <span className="font-medium text-black dark:text-zinc-50">Resolved platform text</span>
+        <MetadataSourceBadge source={job.metadataSource} />
+      </div>
+      {fields.map((field) => (
+        <div key={field.key} className="mt-2">
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">{field.label}</p>
+          <output className="block whitespace-pre-wrap text-black dark:text-zinc-50">
+            {field.value}
+          </output>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+export function JobStatusDetails({
+  job,
+  fileSize,
+  history = false,
+  onRetry,
+  onSaveMetadata,
+}: {
+  job: JobView;
+  fileSize?: number;
+  history?: boolean;
+  onRetry: () => void;
+  onSaveMetadata: (title: string | null, description: string | null) => void | Promise<void>;
+}) {
+  const percent = transferPercent(job, fileSize);
+  return (
+    <div className="mt-2 flex flex-col gap-1">
+      <div className="flex items-center justify-between">
+        <span className="text-zinc-600 dark:text-zinc-400">{job.platform}</span>
+        <span className="font-medium text-black dark:text-zinc-50">
+          {STATUS_LABEL[job.status]}
+          {percent !== null && ` ${percent}%`}
+        </span>
+      </div>
+      {percent !== null && (
+        <div className="h-2 overflow-hidden rounded bg-zinc-200 dark:bg-zinc-800">
+          <div
+            className="h-full bg-black transition-all dark:bg-zinc-50"
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+      )}
+      <JobOutcome job={job} onRetry={onRetry} history={history} />
+      <JobMetadataAudit job={job} />
+      <JobMetadataEditor
+        key={`${job.id}:${job.titleOverride}:${job.descriptionOverride}`}
+        job={job}
+        onSave={onSaveMetadata}
+      />
+    </div>
   );
 }
 
@@ -667,7 +743,9 @@ export default function Home() {
       | "titleOverride"
       | "descriptionOverride"
       | "metadataSource"
+      | "overrideSource"
       | "effectiveMetadata"
+      | "savedMetadata"
       | "metadataAppliesTo"
     > = await response.json();
     const updateUpload = (source: UploadView) => ({
@@ -884,32 +962,15 @@ export default function Home() {
             {upload.jobs.length > 0 && upload.jobs.every((job) => job.status === "done") && (
               <p className="mb-2 font-medium text-green-700 dark:text-green-400">Uploaded successfully.</p>
             )}
-            {upload.jobs.map((job) => {
-              const percent = transferPercent(job, upload.fileSize);
-              return (
-                <div key={job.id} className="flex flex-col gap-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-zinc-600 dark:text-zinc-400">
-                      {job.platform}
-                    </span>
-                    <span className="font-medium text-black dark:text-zinc-50">
-                      {STATUS_LABEL[job.status]}
-                      {percent !== null && ` ${percent}%`}
-                    </span>
-                  </div>
-                  {percent !== null && (
-                    <div className="h-2 overflow-hidden rounded bg-zinc-200 dark:bg-zinc-800">
-                      <div
-                        className="h-full bg-black transition-all dark:bg-zinc-50"
-                        style={{ width: `${percent}%` }}
-                      />
-                    </div>
-                  )}
-                  <JobOutcome job={job} onRetry={() => retryJob(job.id)} />
-                  <JobMetadataEditor key={`${job.id}:${job.titleOverride}:${job.descriptionOverride}`} job={job} onSave={(title, description) => saveJobMetadata(job.id, title, description)} />
-                </div>
-              );
-            })}
+            {upload.jobs.map((job) => (
+              <JobStatusDetails
+                key={job.id}
+                job={job}
+                fileSize={upload.fileSize}
+                onRetry={() => retryJob(job.id)}
+                onSaveMetadata={(title, description) => saveJobMetadata(job.id, title, description)}
+              />
+            ))}
           </div>
         )}
 
@@ -921,11 +982,13 @@ export default function Home() {
             <div key={item.id} className="rounded-md border border-zinc-200 px-4 py-3 text-sm dark:border-zinc-800">
               <div className="flex justify-between gap-3"><span className="truncate font-medium text-black dark:text-zinc-50">{item.title ?? item.fileName ?? "Upload"}</span><time className="shrink-0 text-zinc-600 dark:text-zinc-400">{item.createdAt ? new Date(item.createdAt).toLocaleString() : "Just now"}</time></div>
               {item.jobs.map((job) => (
-                <div key={job.id} className="mt-2 flex flex-col gap-1">
-                  <div className="flex justify-between"><span className="text-zinc-600 dark:text-zinc-400">{job.platform}</span><span className="text-black dark:text-zinc-50">{STATUS_LABEL[job.status]}</span></div>
-                  <JobOutcome job={job} onRetry={() => retryJob(job.id, item)} history />
-                  <JobMetadataEditor key={`${job.id}:${job.titleOverride}:${job.descriptionOverride}`} job={job} onSave={(title, description) => saveJobMetadata(job.id, title, description)} />
-                </div>
+                <JobStatusDetails
+                  key={job.id}
+                  job={job}
+                  history
+                  onRetry={() => retryJob(job.id, item)}
+                  onSaveMetadata={(title, description) => saveJobMetadata(job.id, title, description)}
+                />
               ))}
             </div>
           ))}

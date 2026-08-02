@@ -85,6 +85,11 @@ model Job {
   // corresponding shared value from its Upload.
   titleOverride       String?
   descriptionOverride String?
+  // Exact text and source captured atomically with the latest claim. These
+  // keep active and historical status auditable when saved overrides change.
+  resolvedTitle        String?
+  resolvedDescription  String?
+  resolvedFromOverride Boolean?
   // Retry bookkeeping. attempts counts claims, not failures, so a worker
   // that crashes mid-upload burns an attempt too and a poisoned job can
   // never be reclaimed forever.

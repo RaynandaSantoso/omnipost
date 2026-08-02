@@ -37,7 +37,8 @@ Single-context repo. See `docs/adr/` for the decisions behind these terms.
 - **Resolved metadata** — the final title/description snapshot supplied to a
   PlatformAdapter after a Job's overrides are combined with its Upload's
   shared defaults. It is captured atomically with the Job claim, so edits made
-  while an attempt is uploading apply only when a later attempt is claimed.
+  while an attempt is uploading apply only when a later attempt is claimed;
+  the captured text/source also powers the active-attempt status audit.
   Caption-only overrides are already-finished captions, so resolution clears
   the description instead of composing it a second time.
 - **Lease** — a time-bounded claim a background worker holds on a Job

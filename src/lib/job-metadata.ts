@@ -14,17 +14,35 @@ export interface SharedUploadText {
 }
 
 export function jobMetadataState(
-  job: JobMetadataOverrides & { status: string },
+  job: JobMetadataOverrides & {
+    status: string;
+    resolvedTitle?: string | null;
+    resolvedDescription?: string | null;
+    resolvedFromOverride?: boolean | null;
+  },
   upload: SharedUploadText,
 ) {
   const status = jobStatusFrom(job.status);
+  const overrideSource = job.titleOverride === null && job.descriptionOverride === null
+    ? "shared" as const
+    : "overridden" as const;
+  const hasActiveAttemptSnapshot =
+    status === JOB_STATUS.uploading &&
+    job.resolvedTitle != null &&
+    job.resolvedDescription != null &&
+    job.resolvedFromOverride != null;
+  const savedMetadata = resolveJobMetadata(job, upload);
   return {
     titleOverride: job.titleOverride,
     descriptionOverride: job.descriptionOverride,
-    metadataSource: job.titleOverride === null && job.descriptionOverride === null
-      ? "shared" as const
-      : "overridden" as const,
-    effectiveMetadata: resolveJobMetadata(job, upload),
+    overrideSource,
+    savedMetadata,
+    metadataSource: hasActiveAttemptSnapshot
+      ? job.resolvedFromOverride ? "overridden" as const : "shared" as const
+      : overrideSource,
+    effectiveMetadata: hasActiveAttemptSnapshot
+      ? { title: job.resolvedTitle!, description: job.resolvedDescription! }
+      : savedMetadata,
     metadataAppliesTo: status === JOB_STATUS.uploading
       ? "future-attempt" as const
       : "next-attempt" as const,

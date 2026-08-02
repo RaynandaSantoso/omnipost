@@ -67,7 +67,7 @@ describe("job engine", () => {
 
   async function seedJob(
     job: Record<string, unknown> = {},
-  ): Promise<{ id: string }> {
+  ): Promise<{ id: string; uploadId: string }> {
     const { prisma, ensureSeedUser } = await import("@/lib/db");
     const user = await ensureSeedUser();
     const upload = await prisma.upload.create({
@@ -82,7 +82,7 @@ describe("job engine", () => {
       },
       include: { jobs: true },
     });
-    return { id: upload.jobs[0].id };
+    return { id: upload.jobs[0].id, uploadId: upload.id };
   }
 
   it("claims a runnable job, drives it to done, and releases the lease", async () => {
@@ -155,7 +155,7 @@ describe("job engine", () => {
     const { PATCH } = await import("@/app/api/jobs/[id]/metadata/route");
     const { prisma } = await import("@/lib/db");
     const clock = fakeClock();
-    const { id } = await seedJob({
+    const { id, uploadId } = await seedJob({
       platform: "youtube",
       titleOverride: "Initial title",
       descriptionOverride: "Initial description",
@@ -197,6 +197,20 @@ describe("job engine", () => {
     const edit = await updateMetadata("Future retry title");
     expect(edit.status).toBe(200);
     expect((await edit.json()).appliesTo).toBe("future-attempt");
+    const { GET } = await import("@/app/api/uploads/[id]/route");
+    const status = await GET(
+      new Request(`http://localhost/api/uploads/${uploadId}`),
+      { params: Promise.resolve({ id: uploadId }) },
+    );
+    expect((await status.json()).jobs[0]).toMatchObject({
+      titleOverride: "Future retry title",
+      overrideSource: "overridden",
+      metadataSource: "overridden",
+      effectiveMetadata: {
+        title: "Latest pending title",
+        description: "Saved description",
+      },
+    });
     expect(received[0]).toEqual({
       title: "Latest pending title",
       description: "Saved description",

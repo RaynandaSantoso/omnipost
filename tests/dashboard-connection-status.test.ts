@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
-import { instagramConnectionStatusText, JobMetadataEditor, JobOutcome, OutboundTextPreview, overrideDraftFor, PlatformOverrideEditors, tiktokConnectionStatusText, transferPercent, youtubeConnectionStatusText } from "@/app/page";
+import { instagramConnectionStatusText, JobMetadataEditor, JobOutcome, JobStatusDetails, OutboundTextPreview, overrideDraftFor, PlatformOverrideEditors, tiktokConnectionStatusText, transferPercent, youtubeConnectionStatusText } from "@/app/page";
 
 describe("youtubeConnectionStatusText", () => {
   it("renders the label when connected and labeled", () => {
@@ -319,5 +319,84 @@ describe("JobMetadataEditor", () => {
     }));
 
     expect(html).toContain(">Shared title\nShared description</textarea>");
+  });
+
+  it("edits future text while separately auditing an active attempt snapshot", () => {
+    const html = renderToStaticMarkup(createElement(JobMetadataEditor, {
+      job: {
+        ...baseJob,
+        platform: "tiktok",
+        status: "uploading",
+        titleOverride: null,
+        descriptionOverride: null,
+        overrideSource: "shared",
+        metadataSource: "overridden",
+        effectiveMetadata: { title: "Caption currently in flight", description: "" },
+        savedMetadata: { title: "Future shared title", description: "Future shared description" },
+      },
+      onSave: () => {},
+    }));
+
+    expect(html).toContain("Future shared title\nFuture shared description");
+    expect(html).not.toContain("Caption currently in flight");
+  });
+});
+
+describe("JobStatusDetails", () => {
+  it("renders an overridden YouTube title and description beside current progress", () => {
+    const html = renderToStaticMarkup(createElement(JobStatusDetails, {
+      job: {
+        id: "youtube-job",
+        platform: "youtube",
+        status: "uploading",
+        resultUrl: null,
+        error: null,
+        bytesUploaded: 512,
+        metadataSource: "overridden",
+        effectiveMetadata: {
+          title: "Exact YouTube title",
+          description: "Exact YouTube description",
+        },
+      },
+      fileSize: 2048,
+      onRetry: () => {},
+      onSaveMetadata: () => {},
+    }));
+
+    expect(html).toContain("Uploading 25%");
+    expect(html).toContain("Overridden");
+    expect(html).toContain("Title");
+    expect(html).toContain("Exact YouTube title");
+    expect(html).toContain("Description");
+    expect(html).toContain("Exact YouTube description");
+  });
+
+  it.each([
+    ["instagram" as const, "instagram://media/media-123", "Published to Instagram (media media-123)"],
+    ["tiktok" as const, "tiktok://publish/video-123", "Posted privately to your TikTok account (SELF_ONLY)."],
+  ])("renders the exact shared %s caption beside historical outcome details", (platform, resultUrl, outcome) => {
+    const html = renderToStaticMarkup(createElement(JobStatusDetails, {
+      job: {
+        id: `${platform}-job`,
+        platform,
+        status: "done",
+        resultUrl,
+        error: null,
+        metadataSource: "shared",
+        effectiveMetadata: {
+          title: "Shared title",
+          description: "Shared description",
+        },
+      },
+      history: true,
+      onRetry: () => {},
+      onSaveMetadata: () => {},
+    }));
+
+    expect(html).toContain("Done");
+    expect(html).toContain("Shared");
+    expect(html).toContain("Caption");
+    expect(html).toContain("Shared title\nShared description");
+    expect(html).toContain(outcome);
   });
 });

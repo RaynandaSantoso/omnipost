@@ -76,11 +76,14 @@ describe("GET /api/uploads/[id]", () => {
         filePath: "/tmp/clip.mp4",
         fileSize: 1024,
         jobs: {
-          create: [{
-            platform: "youtube",
-            status: "pending",
-            titleOverride: "YouTube title",
-          }],
+          create: [
+            {
+              platform: "youtube",
+              status: "pending",
+              titleOverride: "YouTube title",
+            },
+            { platform: "tiktok", status: "pending" },
+          ],
         },
       },
     });
@@ -92,7 +95,8 @@ describe("GET /api/uploads/[id]", () => {
     const data = await response.json();
 
     expect(data.description).toBe("Shared description");
-    expect(data.jobs[0]).toMatchObject({
+    const jobs = Object.fromEntries(data.jobs.map((job: { platform: string }) => [job.platform, job]));
+    expect(jobs.youtube).toMatchObject({
       titleOverride: "YouTube title",
       descriptionOverride: null,
       metadataSource: "overridden",
@@ -101,6 +105,13 @@ describe("GET /api/uploads/[id]", () => {
         description: "Shared description",
       },
       metadataAppliesTo: "next-attempt",
+    });
+    expect(jobs.tiktok).toMatchObject({
+      metadataSource: "shared",
+      effectiveMetadata: {
+        title: "Shared title",
+        description: "Shared description",
+      },
     });
   });
 

@@ -68,4 +68,39 @@ describe("upload history and retry API", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ id: upload.jobs[0].id, status: "pending", error: null });
   });
+
+  it("returns cleared Job metadata to shared fallback on the next history read", async () => {
+    const upload = await createUpload("done", new Date());
+    const { prisma } = await import("@/lib/db");
+    await prisma.job.update({
+      where: { id: upload.jobs[0].id },
+      data: {
+        titleOverride: "Historical title",
+        descriptionOverride: "Historical description",
+        resolvedTitle: "Historical title",
+        resolvedDescription: "Historical description",
+        resolvedFromOverride: true,
+      },
+    });
+    const { PATCH } = await import("@/app/api/jobs/[id]/metadata/route");
+    const cleared = await PATCH(new Request(
+      `http://localhost/api/jobs/${upload.jobs[0].id}/metadata`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: null, description: null }),
+      },
+    ), { params: Promise.resolve({ id: upload.jobs[0].id }) });
+    expect(cleared.status).toBe(200);
+
+    const { GET } = await import("@/app/api/uploads/route");
+    const history = await (await GET()).json();
+    expect(history[0].jobs[0]).toMatchObject({
+      metadataSource: "shared",
+      effectiveMetadata: {
+        title: "Published Short",
+        description: "A short clip",
+      },
+    });
+  });
 });
