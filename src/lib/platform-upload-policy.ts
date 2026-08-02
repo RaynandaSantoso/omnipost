@@ -12,6 +12,43 @@ export interface PlatformTextOverride {
 
 export type PlatformTextOverrides = Partial<Record<Platform, PlatformTextOverride>>;
 
+export function platformTextOverrideViolation(
+  platform: Platform,
+  override: { title?: string | null; description?: string | null },
+): string | null {
+  const shape = uploadPolicyFor(platform).text;
+  if (shape.kind === "caption") {
+    if (override.description !== undefined && override.description !== null) {
+      return `${platform} accepts one finished caption override, not a separate description`;
+    }
+    if (
+      override.title !== undefined &&
+      override.title !== null &&
+      override.title.length > shape.captionMaxLength
+    ) {
+      return `${platform} caption must be ${shape.captionMaxLength} characters or fewer`;
+    }
+    return null;
+  }
+  if (
+    override.title !== undefined &&
+    override.title !== null &&
+    shape.titleMaxLength !== null &&
+    override.title.length > shape.titleMaxLength
+  ) {
+    return `${platform} title must be ${shape.titleMaxLength} characters or fewer`;
+  }
+  if (
+    override.description !== undefined &&
+    override.description !== null &&
+    shape.descriptionMaxLength !== null &&
+    override.description.length > shape.descriptionMaxLength
+  ) {
+    return `${platform} description must be ${shape.descriptionMaxLength} characters or fewer`;
+  }
+  return null;
+}
+
 interface TitleAndDescriptionTextShape {
   kind: "title-and-description";
   titleMaxLength: number | null;

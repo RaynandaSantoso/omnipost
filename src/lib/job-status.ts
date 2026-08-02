@@ -10,3 +10,9 @@ export const JOB_STATUS = {
 } as const;
 
 export type JobStatus = (typeof JOB_STATUS)[keyof typeof JOB_STATUS];
+
+export function jobStatusFrom(value: string): JobStatus {
+  const statuses = Object.values(JOB_STATUS) as string[];
+  if (statuses.includes(value)) return value as JobStatus;
+  throw new Error(`unsupported Job status "${value}"`);
+}

@@ -36,8 +36,10 @@ Single-context repo. See `docs/adr/` for the decisions behind these terms.
   null means inherit the corresponding shared value from its Upload.
 - **Resolved metadata** — the final title/description snapshot supplied to a
   PlatformAdapter after a Job's overrides are combined with its Upload's
-  shared defaults. Caption-only overrides are already-finished captions, so
-  resolution clears the description instead of composing it a second time.
+  shared defaults. It is captured atomically with the Job claim, so edits made
+  while an attempt is uploading apply only when a later attempt is claimed.
+  Caption-only overrides are already-finished captions, so resolution clears
+  the description instead of composing it a second time.
 - **Lease** — a time-bounded claim a background worker holds on a Job
   while working it, renewed by heartbeat. An expired lease is what makes
   a job reclaimable after a crash, rather than stuck forever.

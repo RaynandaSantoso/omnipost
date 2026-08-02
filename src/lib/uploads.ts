@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db";
 import { saveUploadFile } from "@/lib/storage";
 import { platformSchema, type Platform } from "@/lib/platform";
 import {
-  uploadPolicyFor,
+  platformTextOverrideViolation,
   uploadPolicyViolation,
   type PlatformTextOverride,
   type PlatformTextOverrides,
@@ -51,14 +51,8 @@ export async function createUpload(params: {
         `metadata override target "${platform}" is not included in this upload`,
       );
     }
-    if (
-      uploadPolicyFor(platform).text.kind === "caption" &&
-      override.description !== undefined
-    ) {
-      throw new UploadValidationError(
-        `${platform} accepts one finished caption override, not a separate description`,
-      );
-    }
+    const metadataViolation = platformTextOverrideViolation(platform, override);
+    if (metadataViolation) throw new UploadValidationError(metadataViolation);
   }
   validateVideoFile(file, platforms);
   const { filePath, fileName, fileSize } = await saveUploadFile(file);

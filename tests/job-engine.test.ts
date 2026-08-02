@@ -150,6 +150,105 @@ describe("job engine", () => {
     });
   });
 
+  it("claims the latest saved metadata and freezes it until a later retry", async () => {
+    const { createJobEngine } = await import("@/lib/job-engine");
+    const { PATCH } = await import("@/app/api/jobs/[id]/metadata/route");
+    const { prisma } = await import("@/lib/db");
+    const clock = fakeClock();
+    const { id } = await seedJob({
+      platform: "youtube",
+      titleOverride: "Initial title",
+      descriptionOverride: "Initial description",
+    });
+    const updateMetadata = (title: string) => PATCH(new Request(
+      `http://localhost/api/jobs/${id}/metadata`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title, description: "Saved description" }),
+      },
+    ), { params: Promise.resolve({ id }) });
+    await updateMetadata("Latest pending title");
+
+    const received: Array<Pick<UploadMetadata, "title" | "description">> = [];
+    let attempt = 0;
+    let firstStarted!: () => void;
+    let finishFirst!: () => void;
+    const started = new Promise<void>((resolve) => { firstStarted = resolve; });
+    const firstMayFinish = new Promise<void>((resolve) => { finishFirst = resolve; });
+    const engine = createJobEngine({
+      clock,
+      backoffBaseMs: 1,
+      random: () => 0,
+      resolveAdapter: () => adapterOf(async (metadata) => {
+        received.push({ title: metadata.title, description: metadata.description });
+        attempt += 1;
+        if (attempt === 1) {
+          firstStarted();
+          await firstMayFinish;
+          throw new AdapterFailure("try again", "retryable");
+        }
+        return { url: "https://example.test/retried" };
+      }),
+    });
+
+    const activeAttempt = engine.tick();
+    await started;
+    const edit = await updateMetadata("Future retry title");
+    expect(edit.status).toBe(200);
+    expect((await edit.json()).appliesTo).toBe("future-attempt");
+    expect(received[0]).toEqual({
+      title: "Latest pending title",
+      description: "Saved description",
+    });
+    finishFirst();
+    await activeAttempt;
+
+    const pending = await prisma.job.findUniqueOrThrow({ where: { id } });
+    clock.advance(pending.nextAttemptAt!.getTime() - clock.date().getTime() + 1);
+    await engine.tick();
+
+    expect(received).toEqual([
+      { title: "Latest pending title", description: "Saved description" },
+      { title: "Future retry title", description: "Saved description" },
+    ]);
+  });
+
+  it("keeps a caption-only edit finished across a retry", async () => {
+    const { createJobEngine } = await import("@/lib/job-engine");
+    const { prisma } = await import("@/lib/db");
+    const clock = fakeClock();
+    const { id } = await seedJob({
+      platform: "tiktok",
+      titleOverride: "Finished caption #one",
+    });
+    const received: Array<Pick<UploadMetadata, "title" | "description">> = [];
+    const engine = createJobEngine({
+      clock,
+      backoffBaseMs: 1,
+      random: () => 0,
+      resolveAdapter: () => adapterOf(async (metadata) => {
+        received.push({ title: metadata.title, description: metadata.description });
+        if (received.length === 1) throw new AdapterFailure("try again", "retryable");
+        return { url: "https://example.test/tiktok/retried" };
+      }),
+    });
+
+    await engine.tick();
+    await prisma.job.update({
+      where: { id },
+      data: { titleOverride: "Finished caption #two" },
+    });
+    const pending = await prisma.job.findUniqueOrThrow({ where: { id } });
+    clock.advance(pending.nextAttemptAt!.getTime() - clock.date().getTime() + 1);
+    await engine.tick();
+
+    expect(received).toEqual([
+      { title: "Finished caption #one", description: "" },
+      { title: "Finished caption #two", description: "" },
+    ]);
+  });
+
   it("finishes one platform job when another platform job fails", async () => {
     const { createJobEngine } = await import("@/lib/job-engine");
     const { prisma, ensureSeedUser } = await import("@/lib/db");

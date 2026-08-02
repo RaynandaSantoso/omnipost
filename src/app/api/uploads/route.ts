@@ -5,6 +5,7 @@ import { createUpload, UploadValidationError } from "@/lib/uploads";
 import { platformSchema, type Platform } from "@/lib/platform";
 import { logError } from "@/lib/log";
 import type { PlatformTextOverrides } from "@/lib/platform-upload-policy";
+import { jobMetadataState } from "@/lib/job-metadata";
 
 const textOverrideSchema = z.object({
   title: z.string().optional(),
@@ -62,6 +63,7 @@ export async function GET() {
         status: job.status,
         resultUrl: job.resultUrl,
         error: job.error,
+        ...jobMetadataState(job, upload),
       })),
     })));
   } catch (error) {
@@ -131,12 +133,18 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         id: upload.id,
+        title: upload.title,
+        description: upload.description,
+        fileName: upload.fileName,
+        fileSize: upload.fileSize,
+        createdAt: upload.createdAt,
         jobs: upload.jobs.map((job) => ({
           id: job.id,
           platform: job.platform,
           status: job.status,
           resultUrl: job.resultUrl,
           error: job.error,
+          ...jobMetadataState(job, upload),
         })),
       },
       { status: 201 },

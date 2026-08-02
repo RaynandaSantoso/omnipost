@@ -63,6 +63,47 @@ describe("GET /api/uploads/[id]", () => {
     expect(data.jobs[0].resultUrl).toBe("dry-run://x");
   });
 
+  it("reports editable override state and its effective source", async () => {
+    const { GET } = await import("@/app/api/uploads/[id]/route");
+    const { prisma, ensureSeedUser } = await import("@/lib/db");
+    const user = await ensureSeedUser();
+    const upload = await prisma.upload.create({
+      data: {
+        userId: user.id,
+        title: "Shared title",
+        description: "Shared description",
+        fileName: "clip.mp4",
+        filePath: "/tmp/clip.mp4",
+        fileSize: 1024,
+        jobs: {
+          create: [{
+            platform: "youtube",
+            status: "pending",
+            titleOverride: "YouTube title",
+          }],
+        },
+      },
+    });
+
+    const response = await GET(
+      new Request(`http://localhost/api/uploads/${upload.id}`),
+      { params: Promise.resolve({ id: upload.id }) },
+    );
+    const data = await response.json();
+
+    expect(data.description).toBe("Shared description");
+    expect(data.jobs[0]).toMatchObject({
+      titleOverride: "YouTube title",
+      descriptionOverride: null,
+      metadataSource: "overridden",
+      effectiveMetadata: {
+        title: "YouTube title",
+        description: "Shared description",
+      },
+      metadataAppliesTo: "next-attempt",
+    });
+  });
+
   it("reports platform-side transfer progress while a job is uploading", async () => {
     const { GET } = await import("@/app/api/uploads/[id]/route");
     const { prisma, ensureSeedUser } = await import("@/lib/db");

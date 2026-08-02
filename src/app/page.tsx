@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Platform } from "@/lib/platform";
 import {
   outboundTextFor,
+  uploadPolicyFor,
   uploadPolicyViolation,
   type AuthoredText,
   type PlatformTextOverride,
@@ -19,11 +20,17 @@ interface JobView {
   error: string | null;
   /** Bytes the platform has confirmed receiving, once a transfer is under way. */
   bytesUploaded?: number | null;
+  titleOverride?: string | null;
+  descriptionOverride?: string | null;
+  metadataSource?: "shared" | "overridden";
+  effectiveMetadata?: AuthoredText;
+  metadataAppliesTo?: "next-attempt" | "future-attempt";
 }
 
 interface UploadView {
   id: string;
   title?: string;
+  description?: string;
   fileName?: string;
   fileSize?: number;
   createdAt?: string;
@@ -316,6 +323,112 @@ export function PlatformOverrideEditors({
   );
 }
 
+export function JobMetadataEditor({
+  job,
+  onSave,
+}: {
+  job: JobView;
+  onSave: (title: string | null, description: string | null) => void | Promise<void>;
+}) {
+  const shape = uploadPolicyFor(job.platform).text;
+  const effectiveMetadata = job.effectiveMetadata ?? { title: "", description: "" };
+  const effectiveTitle = shape.kind === "caption"
+    ? outboundTextFor(job.platform, effectiveMetadata)[0].value
+    : effectiveMetadata.title;
+  const [draftTitle, setDraftTitle] = useState(
+    job.titleOverride ?? effectiveTitle,
+  );
+  const [draftDescription, setDraftDescription] = useState(
+    job.descriptionOverride ?? effectiveMetadata.description,
+  );
+  const [saving, setSaving] = useState(false);
+
+  async function save(title: string | null, description: string | null) {
+    setSaving(true);
+    try {
+      await onSave(title, description);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <details className="mt-2 rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
+      <summary className="flex cursor-pointer justify-between gap-2">
+        <span>Edit platform text</span>
+        <span className={job.metadataSource === "overridden" ? "text-blue-600 dark:text-blue-400" : "text-zinc-500 dark:text-zinc-400"}>
+          {job.metadataSource === "overridden" ? "Overridden" : "Shared"}
+        </span>
+      </summary>
+      <form
+        className="mt-3 flex flex-col gap-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void save(draftTitle, shape.kind === "caption" ? null : draftDescription);
+        }}
+      >
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+            {shape.kind === "caption" ? "Caption" : "Title"}
+          </span>
+          {shape.kind === "caption" ? (
+            <textarea
+              name={`job-${job.id}-title`}
+              rows={3}
+              maxLength={shape.captionMaxLength}
+              value={draftTitle}
+              onChange={(event) => setDraftTitle(event.target.value)}
+              className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+            />
+          ) : (
+            <input
+              name={`job-${job.id}-title`}
+              type="text"
+              maxLength={shape.titleMaxLength ?? undefined}
+              value={draftTitle}
+              onChange={(event) => setDraftTitle(event.target.value)}
+              className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+            />
+          )}
+        </label>
+        {shape.kind === "title-and-description" && (
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-zinc-500 dark:text-zinc-400">Description</span>
+            <textarea
+              name={`job-${job.id}-description`}
+              rows={3}
+              maxLength={shape.descriptionMaxLength ?? undefined}
+              value={draftDescription}
+              onChange={(event) => setDraftDescription(event.target.value)}
+              className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+            />
+          </label>
+        )}
+        {job.status === "uploading" && (
+          <p className="text-xs text-amber-700 dark:text-amber-300">
+            Saved changes apply to a future attempt, not the post currently in flight.
+          </p>
+        )}
+        <div className="flex gap-2">
+          <button type="submit" disabled={saving} className="rounded border border-zinc-300 px-2 py-1 text-black disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50">
+            {saving ? "Saving..." : "Save override"}
+          </button>
+          {job.metadataSource === "overridden" && (
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => void save(null, null)}
+              className="rounded border border-zinc-300 px-2 py-1 text-black disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50"
+            >
+              Clear override
+            </button>
+          )}
+        </div>
+      </form>
+    </details>
+  );
+}
+
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
@@ -536,6 +649,33 @@ export default function Home() {
     setUpload(updated);
     setHistory((current) => current.map((item) => item.id === updated.id ? updated : item));
     pollStatus(updated.id);
+  }
+
+  async function saveJobMetadata(
+    jobId: string,
+    titleOverride: string | null,
+    descriptionOverride: string | null,
+  ) {
+    const response = await fetch(`/api/jobs/${jobId}/metadata`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: titleOverride, description: descriptionOverride }),
+    });
+    if (!response.ok) return;
+    const metadata: Pick<JobView,
+      | "id"
+      | "titleOverride"
+      | "descriptionOverride"
+      | "metadataSource"
+      | "effectiveMetadata"
+      | "metadataAppliesTo"
+    > = await response.json();
+    const updateUpload = (source: UploadView) => ({
+      ...source,
+      jobs: source.jobs.map((job) => job.id === metadata.id ? { ...job, ...metadata } : job),
+    });
+    setUpload((current) => current ? updateUpload(current) : current);
+    setHistory((current) => current.map(updateUpload));
   }
 
   return (
@@ -766,6 +906,7 @@ export default function Home() {
                     </div>
                   )}
                   <JobOutcome job={job} onRetry={() => retryJob(job.id)} />
+                  <JobMetadataEditor key={`${job.id}:${job.titleOverride}:${job.descriptionOverride}`} job={job} onSave={(title, description) => saveJobMetadata(job.id, title, description)} />
                 </div>
               );
             })}
@@ -783,6 +924,7 @@ export default function Home() {
                 <div key={job.id} className="mt-2 flex flex-col gap-1">
                   <div className="flex justify-between"><span className="text-zinc-600 dark:text-zinc-400">{job.platform}</span><span className="text-black dark:text-zinc-50">{STATUS_LABEL[job.status]}</span></div>
                   <JobOutcome job={job} onRetry={() => retryJob(job.id, item)} history />
+                  <JobMetadataEditor key={`${job.id}:${job.titleOverride}:${job.descriptionOverride}`} job={job} onSave={(title, description) => saveJobMetadata(job.id, title, description)} />
                 </div>
               ))}
             </div>

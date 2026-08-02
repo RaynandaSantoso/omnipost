@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { logError } from "@/lib/log";
+import { jobMetadataState } from "@/lib/job-metadata";
 
 export async function GET(
   _request: Request,
@@ -35,6 +36,7 @@ export async function GET(
         // Narrowed back for JSON, which has no bigint. Safe: the value is a
         // byte offset into one video, far below Number's exact-integer range.
         bytesUploaded: job.bytesUploaded === null ? null : Number(job.bytesUploaded),
+        ...jobMetadataState(job, upload),
       })),
     });
   } catch (error) {

@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
-import { instagramConnectionStatusText, JobOutcome, OutboundTextPreview, overrideDraftFor, PlatformOverrideEditors, tiktokConnectionStatusText, transferPercent, youtubeConnectionStatusText } from "@/app/page";
+import { instagramConnectionStatusText, JobMetadataEditor, JobOutcome, OutboundTextPreview, overrideDraftFor, PlatformOverrideEditors, tiktokConnectionStatusText, transferPercent, youtubeConnectionStatusText } from "@/app/page";
 
 describe("youtubeConnectionStatusText", () => {
   it("renders the label when connected and labeled", () => {
@@ -257,5 +257,67 @@ describe("PlatformOverrideEditors", () => {
     expect(html).toContain('value="YouTube title"');
     expect(html).toContain('name="overrides.youtube.description"');
     expect(html).toContain(">YouTube description</textarea>");
+  });
+});
+
+describe("JobMetadataEditor", () => {
+  const baseJob = {
+    id: "job-1",
+    platform: "youtube" as const,
+    status: "pending" as const,
+    resultUrl: null,
+    error: null,
+    titleOverride: "YouTube title",
+    descriptionOverride: null,
+    metadataSource: "overridden" as const,
+    effectiveMetadata: { title: "YouTube title", description: "Shared description" },
+    metadataAppliesTo: "next-attempt" as const,
+  };
+
+  it("shows source and shape-aware title-and-description controls", () => {
+    const html = renderToStaticMarkup(createElement(JobMetadataEditor, {
+      job: baseJob,
+      onSave: () => {},
+    }));
+
+    expect(html).toContain("Overridden");
+    expect(html).toContain('name="job-job-1-title"');
+    expect(html).toContain('name="job-job-1-description"');
+    expect(html).toContain("Clear override");
+  });
+
+  it("uses one caption control and explains edits during an active attempt", () => {
+    const html = renderToStaticMarkup(createElement(JobMetadataEditor, {
+      job: {
+        ...baseJob,
+        platform: "tiktok",
+        status: "uploading",
+        titleOverride: "Finished caption",
+        descriptionOverride: null,
+        effectiveMetadata: { title: "Finished caption", description: "" },
+        metadataAppliesTo: "future-attempt",
+      },
+      onSave: () => {},
+    }));
+
+    expect(html).toContain("Caption");
+    expect(html).not.toContain('name="job-job-1-description"');
+    expect(html).toContain("future attempt");
+  });
+
+  it("starts a shared caption draft with the complete composed caption", () => {
+    const html = renderToStaticMarkup(createElement(JobMetadataEditor, {
+      job: {
+        ...baseJob,
+        platform: "instagram",
+        titleOverride: null,
+        descriptionOverride: null,
+        metadataSource: "shared",
+        effectiveMetadata: { title: "Shared title", description: "Shared description" },
+      },
+      onSave: () => {},
+    }));
+
+    expect(html).toContain(">Shared title\nShared description</textarea>");
   });
 });
