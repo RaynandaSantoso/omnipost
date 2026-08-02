@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Platform } from "@/lib/platform";
-import { uploadPolicyViolation } from "@/lib/platform-upload-policy";
+import { outboundTextFor, uploadPolicyViolation } from "@/lib/platform-upload-policy";
 
 interface JobView {
   id: string;
@@ -77,14 +77,17 @@ function typeFor(file: File): string {
   return extension === "mov" ? "video/quicktime" : `video/${extension ?? "unknown"}`;
 }
 
-function uploadPolicyPlatforms(
+function uploadTargetPlatforms(
+  youtube: YouTubeConnectionView | null,
   tiktok: TikTokConnectionView | null,
   instagram: InstagramConnectionView | null,
 ): Platform[] {
-  return [
+  const connected: Platform[] = [
+    ...(youtube?.connected ? ["youtube" as const] : []),
     ...(tiktok?.connected ? ["tiktok" as const] : []),
     ...(instagram?.connected ? ["instagram" as const] : []),
   ];
+  return connected.length > 0 ? connected : ["dry-run"];
 }
 
 export function youtubeConnectionStatusText(youtube: YouTubeConnectionView | null): string {
@@ -165,6 +168,42 @@ export function JobOutcome({
       </>
     )}
   </>;
+}
+
+export function OutboundTextPreview({
+  platforms,
+  title,
+  description,
+}: {
+  platforms: Platform[];
+  title: string;
+  description: string;
+}) {
+  return (
+    <section aria-label="Outbound text preview" className="flex flex-col gap-2">
+      <p className="text-sm font-medium text-black dark:text-zinc-50">
+        Outbound text preview
+      </p>
+      {platforms.map((platform) => (
+        <div key={platform} className="rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800">
+          <p className="font-medium text-black dark:text-zinc-50">
+            {PLATFORM_PRESENTATION[platform].name}
+          </p>
+          {outboundTextFor(platform, { title, description }).map((field) => (
+            <div key={field.key} className="mt-2">
+              <div className="flex justify-between gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+                <span>{field.label}</span>
+                {field.maxLength !== null && <span>Max {field.maxLength} characters</span>}
+              </div>
+              <output className="mt-1 block min-h-6 whitespace-pre-wrap text-black dark:text-zinc-50">
+                {field.value}
+              </output>
+            </div>
+          ))}
+        </div>
+      ))}
+    </section>
+  );
 }
 
 export default function Home() {
@@ -278,7 +317,7 @@ export default function Home() {
     }
     const platformIssue = uploadPolicyViolation(
       candidate,
-      uploadPolicyPlatforms(tiktok, instagram),
+      uploadTargetPlatforms(youtube, tiktok, instagram),
     );
     if (platformIssue) {
       setFileIssue(`${platformIssue}.`);
@@ -340,7 +379,7 @@ export default function Home() {
     }
     const platformIssue = uploadPolicyViolation(
       file,
-      uploadPolicyPlatforms(tiktok, instagram),
+      uploadTargetPlatforms(youtube, tiktok, instagram),
     );
     if (platformIssue) {
       setFileIssue(`${platformIssue}.`);
@@ -539,6 +578,12 @@ export default function Home() {
             placeholder="Description"
             rows={3}
             className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-black outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+          />
+
+          <OutboundTextPreview
+            platforms={uploadTargetPlatforms(youtube, tiktok, instagram)}
+            title={title}
+            description={description}
           />
 
           {error && (

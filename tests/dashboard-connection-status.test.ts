@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
-import { instagramConnectionStatusText, JobOutcome, tiktokConnectionStatusText, transferPercent, youtubeConnectionStatusText } from "@/app/page";
+import { instagramConnectionStatusText, JobOutcome, OutboundTextPreview, tiktokConnectionStatusText, transferPercent, youtubeConnectionStatusText } from "@/app/page";
 
 describe("youtubeConnectionStatusText", () => {
   it("renders the label when connected and labeled", () => {
@@ -183,5 +183,23 @@ describe("transferPercent", () => {
 
   it("shows nothing when the upload size is unknown", () => {
     expect(transferPercent(uploading, undefined)).toBeNull();
+  });
+});
+
+describe("OutboundTextPreview", () => {
+  it("shows the exact declared outbound fields for each connected platform", () => {
+    const html = renderToStaticMarkup(createElement(OutboundTextPreview, {
+      platforms: ["youtube", "tiktok", "instagram"],
+      title: "My Short",
+      description: "A short clip",
+    }));
+
+    expect(html).toContain("YouTube");
+    expect(html).toContain("TikTok");
+    expect(html).toContain("Instagram");
+    expect(html.match(/>Title</g)).toHaveLength(1);
+    expect(html.match(/>Description</g)).toHaveLength(1);
+    expect(html.match(/>Caption</g)).toHaveLength(2);
+    expect(html.match(/My Short\nA short clip/g)).toHaveLength(2);
   });
 });

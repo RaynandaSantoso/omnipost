@@ -6,7 +6,7 @@ import {
   type UploadMetadata,
   type UploadResult,
 } from "@/lib/platform-adapter";
-import { uploadPolicyFor } from "@/lib/platform-upload-policy";
+import { composeCaption, uploadPolicyFor } from "@/lib/platform-upload-policy";
 
 const VIDEO_INIT_URL = "https://open.tiktokapis.com/v2/post/publish/video/init/";
 const STATUS_URL = "https://open.tiktokapis.com/v2/post/publish/status/fetch/";
@@ -169,7 +169,7 @@ export class TikTokAdapter implements PlatformAdapter {
         },
         body: JSON.stringify({
           post_info: {
-            title: [metadata.title, metadata.description].filter(Boolean).join("\n"),
+            title: composeCaption(metadata),
             privacy_level: SELF_ONLY_PRIVACY,
             disable_duet: false,
             disable_comment: false,

@@ -1,6 +1,35 @@
 import type { Platform } from "@/lib/platform";
 
+export interface AuthoredText {
+  title: string;
+  description: string;
+}
+
+interface TitleAndDescriptionTextShape {
+  kind: "title-and-description";
+  titleMaxLength: number | null;
+  descriptionMaxLength: number | null;
+}
+
+interface CaptionTextShape {
+  kind: "caption";
+  captionMaxLength: number;
+  compose: (authored: AuthoredText) => string;
+}
+
+export type PlatformTextShape =
+  | TitleAndDescriptionTextShape
+  | CaptionTextShape;
+
+export interface OutboundTextField {
+  key: "title" | "description" | "caption";
+  label: "Title" | "Description" | "Caption";
+  maxLength: number | null;
+  value: string;
+}
+
 interface PlatformUploadPolicy {
+  text: PlatformTextShape;
   maxFileSizeBytes?: number;
   oversizeMessage?: string;
   requireMatchingVideoExtension?: boolean;
@@ -8,10 +37,31 @@ interface PlatformUploadPolicy {
   unsupportedFormatMessage?: string;
 }
 
+export function composeCaption({ title, description }: AuthoredText): string {
+  return [title, description].filter(Boolean).join("\n");
+}
+
 const PLATFORM_UPLOAD_POLICIES = {
-  "dry-run": {},
-  youtube: {},
+  "dry-run": {
+    text: {
+      kind: "title-and-description",
+      titleMaxLength: null,
+      descriptionMaxLength: null,
+    },
+  },
+  youtube: {
+    text: {
+      kind: "title-and-description",
+      titleMaxLength: 100,
+      descriptionMaxLength: 5_000,
+    },
+  },
   instagram: {
+    text: {
+      kind: "caption",
+      captionMaxLength: 2_200,
+      compose: composeCaption,
+    },
     allowedVideoExtensions: ["mp4", "mov"],
     maxFileSizeBytes: 1024 * 1024 * 1024,
     oversizeMessage: "Instagram Reels must be 1 GB or smaller",
@@ -19,6 +69,11 @@ const PLATFORM_UPLOAD_POLICIES = {
     requireMatchingVideoExtension: true,
   },
   tiktok: {
+    text: {
+      kind: "caption",
+      captionMaxLength: 2_200,
+      compose: composeCaption,
+    },
     maxFileSizeBytes: 64 * 1024 * 1024,
     oversizeMessage: "TikTok whole-file uploads must be 64 MB or smaller",
     requireMatchingVideoExtension: true,
@@ -33,6 +88,35 @@ const VIDEO_TYPE_BY_EXTENSION: Record<string, string> = {
 
 export function uploadPolicyFor(platform: Platform): PlatformUploadPolicy {
   return PLATFORM_UPLOAD_POLICIES[platform];
+}
+
+export function outboundTextFor(
+  platform: Platform,
+  authored: AuthoredText,
+): OutboundTextField[] {
+  const shape = uploadPolicyFor(platform).text;
+  if (shape.kind === "caption") {
+    return [{
+      key: "caption",
+      label: "Caption",
+      maxLength: shape.captionMaxLength,
+      value: shape.compose(authored),
+    }];
+  }
+  return [
+    {
+      key: "title",
+      label: "Title",
+      maxLength: shape.titleMaxLength,
+      value: authored.title,
+    },
+    {
+      key: "description",
+      label: "Description",
+      maxLength: shape.descriptionMaxLength,
+      value: authored.description,
+    },
+  ];
 }
 
 export function uploadPolicyViolation(
