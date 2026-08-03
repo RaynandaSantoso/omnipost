@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { logError } from "@/lib/log";
-import { jobMetadataState } from "@/lib/job-metadata";
+import { jobMetadataState, sharedUploadText } from "@/lib/job-metadata";
 
 export async function GET(
   _request: Request,
@@ -18,10 +18,12 @@ export async function GET(
       return NextResponse.json({ error: "not found" }, { status: 404 });
     }
 
+    const uploadText = sharedUploadText(upload);
     return NextResponse.json({
       id: upload.id,
       title: upload.title,
       description: upload.description,
+      hashtags: uploadText.hashtags,
       fileName: upload.fileName,
       // Paired with each job's bytesUploaded, this is what turns the
       // platform-side transfer into a percentage the dashboard can show.
@@ -36,7 +38,7 @@ export async function GET(
         // Narrowed back for JSON, which has no bigint. Safe: the value is a
         // byte offset into one video, far below Number's exact-integer range.
         bytesUploaded: job.bytesUploaded === null ? null : Number(job.bytesUploaded),
-        ...jobMetadataState(job, upload),
+        ...jobMetadataState(job, uploadText),
       })),
     });
   } catch (error) {

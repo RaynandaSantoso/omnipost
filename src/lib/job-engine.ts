@@ -11,7 +11,7 @@ import {
 import { JOB_POLICY_DEFAULTS, type JobPolicy } from "@/lib/job-policy";
 import { logError } from "@/lib/log";
 import { JOB_STATUS } from "@/lib/job-status";
-import { resolveJobMetadata } from "@/lib/job-metadata";
+import { resolveJobMetadata, sharedUploadText } from "@/lib/job-metadata";
 
 // The durable job engine. Jobs are rows in SQLite and the database is the
 // only source of truth: a worker claims a job by writing a time-bounded
@@ -120,7 +120,7 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
         include: { upload: true },
       });
       if (!current) return null;
-      const metadata = resolveJobMetadata(current, current.upload);
+      const metadata = resolveJobMetadata(current, sharedUploadText(current.upload));
       const resolvedFromOverride =
         current.titleOverride !== null || current.descriptionOverride !== null;
       const claimed = await transaction.job.updateMany({

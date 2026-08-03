@@ -150,6 +150,52 @@ describe("job engine", () => {
     });
   });
 
+  it("composes the Upload's shared hashtags into what each adapter actually receives", async () => {
+    const { createJobEngine } = await import("@/lib/job-engine");
+    const { prisma, ensureSeedUser } = await import("@/lib/db");
+    const user = await ensureSeedUser();
+    const upload = await prisma.upload.create({
+      data: {
+        userId: user.id,
+        title: "Shared title",
+        description: "Shared description",
+        hashtags: JSON.stringify(["launch", "demo"]),
+        fileName: "clip.mp4",
+        filePath: "/tmp/clip.mp4",
+        fileSize: 1024,
+        jobs: {
+          create: [
+            { platform: "youtube", status: "pending" },
+            { platform: "tiktok", status: "pending" },
+          ],
+        },
+      },
+      include: { jobs: true },
+    });
+    const received = new Map<string, Pick<UploadMetadata, "title" | "description">>();
+    const engine = createJobEngine({
+      resolveAdapter: (platform) => adapterOf(async (metadata) => {
+        received.set(platform, {
+          title: metadata.title,
+          description: metadata.description,
+        });
+        return { url: `https://example.test/${platform}` };
+      }),
+    });
+
+    await engine.tick();
+
+    expect(Object.fromEntries(received)).toEqual({
+      youtube: { title: "Shared title", description: "Shared description\n\n#launch #demo" },
+      tiktok: { title: "Shared title", description: "Shared description #launch #demo" },
+    });
+
+    const jobs = await prisma.job.findMany({ where: { uploadId: upload.id } });
+    for (const job of jobs) {
+      expect(job.resolvedDescription).toContain("#launch #demo");
+    }
+  });
+
   it("claims the latest saved metadata and freezes it until a later retry", async () => {
     const { createJobEngine } = await import("@/lib/job-engine");
     const { PATCH } = await import("@/app/api/jobs/[id]/metadata/route");

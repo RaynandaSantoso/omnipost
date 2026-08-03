@@ -85,6 +85,34 @@ export function composeCaption({ title, description }: AuthoredText): string {
   return [title, description].filter(Boolean).join("\n");
 }
 
+export function formatHashtags(hashtags: string[]): string {
+  return hashtags
+    .map((tag) => tag.trim())
+    .filter(Boolean)
+    .map((tag) => (tag.startsWith("#") ? tag : `#${tag}`))
+    .join(" ");
+}
+
+// A caption platform (TikTok/Instagram) wants hashtags appended inline to
+// the end of the caption text; a title-and-description platform (YouTube)
+// wants them appended to the description, where it shows a hashtag as a
+// clickable tag. Both land in `description` — outboundTextFor composes it
+// into the final caption for caption platforms — so the only thing that
+// varies per platform is the join between the existing text and the tags.
+export function applyHashtags(
+  platform: Platform,
+  authored: AuthoredText,
+  hashtags: string[],
+): AuthoredText {
+  const tagText = formatHashtags(hashtags);
+  if (!tagText) return authored;
+  const isCaption = uploadPolicyFor(platform).text.kind === "caption";
+  return {
+    title: authored.title,
+    description: [authored.description, tagText].filter(Boolean).join(isCaption ? " " : "\n\n"),
+  };
+}
+
 const PLATFORM_UPLOAD_POLICIES = {
   "dry-run": {
     text: {

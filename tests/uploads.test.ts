@@ -11,6 +11,7 @@ function uploadRequest(fields: {
   description?: string;
   platform?: string;
   overrides?: unknown;
+  hashtags?: unknown;
 }) {
   const body = new FormData();
   if (fields.video !== undefined && fields.video !== null) {
@@ -27,6 +28,9 @@ function uploadRequest(fields: {
   }
   if (fields.overrides !== undefined) {
     body.set("overrides", JSON.stringify(fields.overrides));
+  }
+  if (fields.hashtags !== undefined) {
+    body.set("hashtags", JSON.stringify(fields.hashtags));
   }
   return new Request("http://localhost/api/uploads", {
     method: "POST",
@@ -167,6 +171,37 @@ describe("POST /api/uploads", () => {
       titleOverride: "YouTube title",
       descriptionOverride: "YouTube description",
     });
+  });
+
+  it("stores a shared hashtag set on the Upload", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const { prisma } = await import("@/lib/db");
+
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "My Short",
+      description: "A short clip",
+      hashtags: ["launch", "demo"],
+    }));
+
+    expect(response.status).toBe(201);
+    const created = await response.json();
+    expect(created.hashtags).toEqual(["launch", "demo"]);
+    const upload = await prisma.upload.findUniqueOrThrow({ where: { id: created.id } });
+    expect(JSON.parse(upload.hashtags)).toEqual(["launch", "demo"]);
+  });
+
+  it("rejects a malformed hashtags field", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "My Short",
+      description: "A short clip",
+      hashtags: { not: "an array" },
+    }));
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain("hashtags");
   });
 
   it("rejects an override for a platform outside the Upload fan-out", async () => {

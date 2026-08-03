@@ -33,6 +33,7 @@ interface UploadView {
   id: string;
   title?: string;
   description?: string;
+  hashtags?: string[];
   fileName?: string;
   fileSize?: number;
   createdAt?: string;
@@ -86,6 +87,10 @@ const PLATFORM_PRESENTATION: Record<Platform, PlatformPresentation> = {
     },
   },
 };
+
+export function parseHashtagInput(raw: string): string[] {
+  return raw.split(/[\s,]+/).map((tag) => tag.trim()).filter(Boolean);
+}
 
 function typeFor(file: File): string {
   if (file.type) return file.type;
@@ -190,11 +195,13 @@ export function OutboundTextPreview({
   platforms,
   title,
   description,
+  hashtags = [],
   overrides = {},
 }: {
   platforms: Platform[];
   title: string;
   description: string;
+  hashtags?: string[];
   overrides?: PlatformTextOverrides;
 }) {
   return (
@@ -208,7 +215,7 @@ export function OutboundTextPreview({
           platform,
           titleOverride: override?.title ?? null,
           descriptionOverride: override?.description ?? null,
-        }, { title, description });
+        }, { title, description, hashtags });
         return <div key={platform} className="rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800">
           <p className="font-medium text-black dark:text-zinc-50">
             {PLATFORM_PRESENTATION[platform].name}
@@ -509,6 +516,7 @@ export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [hashtagInput, setHashtagInput] = useState("");
   const [overrides, setOverrides] = useState<PlatformTextOverrides>({});
   const [dragging, setDragging] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -696,6 +704,10 @@ export default function Home() {
     body.set("video", file);
     body.set("title", title);
     body.set("description", description);
+    const hashtags = parseHashtagInput(hashtagInput);
+    if (hashtags.length > 0) {
+      body.set("hashtags", JSON.stringify(hashtags));
+    }
     if (Object.keys(overrides).length > 0) {
       body.set("overrides", JSON.stringify(overrides));
     }
@@ -912,10 +924,19 @@ export default function Home() {
             className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-black outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
           />
 
+          <input
+            type="text"
+            value={hashtagInput}
+            onChange={(event) => setHashtagInput(event.target.value)}
+            placeholder="Hashtags (space or comma separated, e.g. launch demo)"
+            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-black outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+          />
+
           <OutboundTextPreview
             platforms={uploadTargetPlatforms(youtube, tiktok, instagram)}
             title={title}
             description={description}
+            hashtags={parseHashtagInput(hashtagInput)}
             overrides={overrides}
           />
 

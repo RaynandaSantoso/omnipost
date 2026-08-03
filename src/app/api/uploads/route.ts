@@ -5,12 +5,32 @@ import { createUpload, UploadValidationError } from "@/lib/uploads";
 import { platformSchema, type Platform } from "@/lib/platform";
 import { logError } from "@/lib/log";
 import type { PlatformTextOverrides } from "@/lib/platform-upload-policy";
-import { jobMetadataState } from "@/lib/job-metadata";
+import { jobMetadataState, sharedUploadText } from "@/lib/job-metadata";
 
 const textOverrideSchema = z.object({
   title: z.string().optional(),
   description: z.string().optional(),
 }).strict();
+
+function hashtagsFrom(formData: FormData): string[] | NextResponse {
+  const raw = formData.get("hashtags");
+  if (raw === null) return [];
+  if (typeof raw !== "string") {
+    return NextResponse.json({ error: "hashtags must be JSON text" }, { status: 400 });
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return NextResponse.json({ error: "hashtags must be valid JSON" }, { status: 400 });
+  }
+  const parsed = z.array(z.string()).safeParse(value);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "hashtags must be an array of strings" }, { status: 400 });
+  }
+  return parsed.data;
+}
 
 function overridesFrom(formData: FormData): PlatformTextOverrides | NextResponse {
   const raw = formData.get("overrides");
@@ -55,6 +75,7 @@ export async function GET() {
       id: upload.id,
       title: upload.title,
       description: upload.description,
+      hashtags: sharedUploadText(upload).hashtags,
       fileName: upload.fileName,
       createdAt: upload.createdAt,
       jobs: upload.jobs.map((job) => ({
@@ -63,7 +84,7 @@ export async function GET() {
         status: job.status,
         resultUrl: job.resultUrl,
         error: job.error,
-        ...jobMetadataState(job, upload),
+        ...jobMetadataState(job, sharedUploadText(upload)),
       })),
     })));
   } catch (error) {
@@ -126,15 +147,19 @@ export async function POST(request: Request) {
   const overrides = overridesFrom(formData);
   if (overrides instanceof NextResponse) return overrides;
 
+  const hashtags = hashtagsFrom(formData);
+  if (hashtags instanceof NextResponse) return hashtags;
+
   try {
     const user = await ensureSeedUser();
-    const upload = await createUpload({ userId: user.id, title, description, file, platform, overrides });
+    const upload = await createUpload({ userId: user.id, title, description, file, platform, overrides, hashtags });
 
     return NextResponse.json(
       {
         id: upload.id,
         title: upload.title,
         description: upload.description,
+        hashtags: sharedUploadText(upload).hashtags,
         fileName: upload.fileName,
         fileSize: upload.fileSize,
         createdAt: upload.createdAt,
@@ -144,7 +169,7 @@ export async function POST(request: Request) {
           status: job.status,
           resultUrl: job.resultUrl,
           error: job.error,
-          ...jobMetadataState(job, upload),
+          ...jobMetadataState(job, sharedUploadText(upload)),
         })),
       },
       { status: 201 },

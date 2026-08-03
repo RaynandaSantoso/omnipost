@@ -63,6 +63,10 @@ model Upload {
   user        User     @relation(fields: [userId], references: [id])
   title       String
   description String
+  // JSON-encoded string array, e.g. ["launch", "demo"]. App-layer JSON, same
+  // pattern the metadata override request body already uses — not a Prisma
+  // Json column, to keep the shape explicit and validated at the boundary.
+  hashtags    String   @default("[]")
   fileName    String
   filePath    String
   fileSize    Int

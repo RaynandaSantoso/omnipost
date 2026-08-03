@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
-import { instagramConnectionStatusText, JobMetadataEditor, JobOutcome, JobStatusDetails, OutboundTextPreview, overrideDraftFor, PlatformOverrideEditors, tiktokConnectionStatusText, transferPercent, youtubeConnectionStatusText } from "@/app/page";
+import { instagramConnectionStatusText, JobMetadataEditor, JobOutcome, JobStatusDetails, OutboundTextPreview, overrideDraftFor, parseHashtagInput, PlatformOverrideEditors, tiktokConnectionStatusText, transferPercent, youtubeConnectionStatusText } from "@/app/page";
 
 describe("youtubeConnectionStatusText", () => {
   it("renders the label when connected and labeled", () => {
@@ -186,6 +186,18 @@ describe("transferPercent", () => {
   });
 });
 
+describe("parseHashtagInput", () => {
+  it.each([
+    ["launch demo", ["launch", "demo"]],
+    ["launch, demo", ["launch", "demo"]],
+    ["  launch   demo  ", ["launch", "demo"]],
+    ["", []],
+    ["   ", []],
+  ])("splits free text into a hashtag list", (raw, expected) => {
+    expect(parseHashtagInput(raw)).toEqual(expected);
+  });
+});
+
 describe("OutboundTextPreview", () => {
   it("shows the exact declared outbound fields for each connected platform", () => {
     const html = renderToStaticMarkup(createElement(OutboundTextPreview, {
@@ -218,6 +230,18 @@ describe("OutboundTextPreview", () => {
     expect(html).toContain("YouTube description");
     expect(html).toContain("Finished TikTok caption");
     expect(html).not.toContain("Finished TikTok caption\nShared description");
+  });
+
+  it("shows the composed hashtags per platform's convention", () => {
+    const html = renderToStaticMarkup(createElement(OutboundTextPreview, {
+      platforms: ["youtube", "tiktok"],
+      title: "My Short",
+      description: "A short clip",
+      hashtags: ["launch", "demo"],
+    }));
+
+    expect(html).toContain("A short clip\n\n#launch #demo");
+    expect(html).toContain("My Short\nA short clip #launch #demo");
   });
 });
 

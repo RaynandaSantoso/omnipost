@@ -45,4 +45,48 @@ describe("resolveJobMetadata", () => {
       description: "",
     });
   });
+
+  it("composes the Upload's shared hashtags into the description for a title-and-description platform", () => {
+    expect(resolveJobMetadata(
+      { platform: "youtube", titleOverride: null, descriptionOverride: null },
+      { title: "Shared title", description: "Shared description", hashtags: ["launch", "demo"] },
+    )).toEqual({
+      title: "Shared title",
+      description: "Shared description\n\n#launch #demo",
+    });
+  });
+
+  it("composes the Upload's shared hashtags inline for a caption platform with no override", () => {
+    expect(resolveJobMetadata(
+      { platform: "tiktok", titleOverride: null, descriptionOverride: null },
+      { title: "Shared title", description: "Shared description", hashtags: ["launch"] },
+    )).toEqual({
+      title: "Shared title",
+      description: "Shared description #launch",
+    });
+  });
+
+  it("does not append hashtags on top of a finished caption override", () => {
+    expect(resolveJobMetadata(
+      {
+        platform: "tiktok",
+        titleOverride: "A finished TikTok caption #shorts",
+        descriptionOverride: null,
+      },
+      { title: "Shared title", description: "Shared description", hashtags: ["launch"] },
+    )).toEqual({
+      title: "A finished TikTok caption #shorts",
+      description: "",
+    });
+  });
+
+  it("leaves resolved text unchanged when the Upload has no hashtags", () => {
+    expect(resolveJobMetadata(
+      { platform: "youtube", titleOverride: null, descriptionOverride: null },
+      { title: "Shared title", description: "Shared description", hashtags: [] },
+    )).toEqual({
+      title: "Shared title",
+      description: "Shared description",
+    });
+  });
 });

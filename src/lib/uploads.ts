@@ -37,8 +37,9 @@ export async function createUpload(params: {
   file: File;
   platform?: Platform;
   overrides?: PlatformTextOverrides;
+  hashtags?: string[];
 }) {
-  const { userId, title, description, file } = params;
+  const { userId, title, description, file, hashtags = [] } = params;
   // An explicit platform overrides auto-selection outright, including
   // "youtube" with no connection — that isn't a privilege escalation (this
   // app is single-tenant, and the resulting job just fails terminally with
@@ -62,6 +63,7 @@ export async function createUpload(params: {
       userId,
       title,
       description,
+      hashtags: JSON.stringify(hashtags),
       fileName,
       filePath,
       fileSize,

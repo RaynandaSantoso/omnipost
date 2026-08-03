@@ -1,6 +1,6 @@
 import { JOB_STATUS, jobStatusFrom } from "@/lib/job-status";
 import { platformSchema } from "@/lib/platform";
-import { uploadPolicyFor } from "@/lib/platform-upload-policy";
+import { applyHashtags, uploadPolicyFor } from "@/lib/platform-upload-policy";
 
 export interface JobMetadataOverrides {
   platform: string;
@@ -11,6 +11,27 @@ export interface JobMetadataOverrides {
 export interface SharedUploadText {
   title: string;
   description: string;
+  hashtags?: string[];
+}
+
+// Upload.hashtags is stored as a JSON-encoded string column (see
+// prisma/schema.prisma); this turns a raw Upload row into the shape
+// resolveJobMetadata/jobMetadataState expect. An unparseable value falls
+// back to no hashtags rather than throwing, since it should never happen
+// past the write-side validation but shouldn't break a status read either.
+export function sharedUploadText(
+  upload: { title: string; description: string; hashtags: string },
+): SharedUploadText {
+  let hashtags: string[] = [];
+  try {
+    const parsed: unknown = JSON.parse(upload.hashtags);
+    if (Array.isArray(parsed) && parsed.every((tag) => typeof tag === "string")) {
+      hashtags = parsed;
+    }
+  } catch {
+    // fall through to no hashtags
+  }
+  return { title: upload.title, description: upload.description, hashtags };
 }
 
 export function jobMetadataState(
@@ -59,10 +80,14 @@ export function resolveJobMetadata(
     uploadPolicyFor(platform.data).text.kind === "caption" &&
     job.titleOverride !== null
   ) {
+    // A caption override is already-finished outbound text; the shared
+    // hashtag set isn't composed a second time on top of it.
     return { title: job.titleOverride, description: "" };
   }
-  return {
+  const resolved = {
     title: job.titleOverride ?? upload.title,
     description: job.descriptionOverride ?? upload.description,
   };
+  if (!platform.success || !upload.hashtags?.length) return resolved;
+  return applyHashtags(platform.data, resolved, upload.hashtags);
 }

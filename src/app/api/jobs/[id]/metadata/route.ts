@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import { jobMetadataState } from "@/lib/job-metadata";
+import { jobMetadataState, sharedUploadText } from "@/lib/job-metadata";
 import { logError } from "@/lib/log";
 import { platformSchema } from "@/lib/platform";
 import { platformTextOverrideViolation } from "@/lib/platform-upload-policy";
@@ -21,7 +21,7 @@ function findJob(id: string) {
 }
 
 function metadataView(job: JobWithUpload) {
-  const metadata = jobMetadataState(job, job.upload);
+  const metadata = jobMetadataState(job, sharedUploadText(job.upload));
   return {
     id: job.id,
     platform: job.platform,

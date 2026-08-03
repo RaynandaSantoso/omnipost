@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyHashtags,
   composeCaption,
+  formatHashtags,
   outboundTextFor,
   uploadPolicyFor,
 } from "@/lib/platform-upload-policy";
@@ -49,5 +51,36 @@ describe("platform text policy", () => {
     expect(outboundTextFor("instagram", authored)).toEqual([
       { key: "caption", label: "Caption", maxLength: 2_200, value: "My Short\nA short clip" },
     ]);
+  });
+
+  it.each([
+    [["launch", "demo"], "#launch #demo"],
+    [["#already-tagged"], "#already-tagged"],
+    [[" spaced ", ""], "#spaced"],
+    [[], ""],
+  ])("formats a hashtag set as space-separated, #-prefixed text", (hashtags, expected) => {
+    expect(formatHashtags(hashtags)).toBe(expected);
+  });
+
+  it("places hashtags in the description for title-and-description platforms", () => {
+    const authored = { title: "My Short", description: "A short clip" };
+    expect(applyHashtags("youtube", authored, ["launch", "demo"])).toEqual({
+      title: "My Short",
+      description: "A short clip\n\n#launch #demo",
+    });
+  });
+
+  it("appends hashtags inline to the end of the caption for caption platforms", () => {
+    const authored = { title: "My Short", description: "A short clip" };
+    const applied = applyHashtags("tiktok", authored, ["launch", "demo"]);
+    expect(outboundTextFor("tiktok", applied)).toEqual([
+      { key: "caption", label: "Caption", maxLength: 2_200, value: "My Short\nA short clip #launch #demo" },
+    ]);
+  });
+
+  it("returns the authored text unchanged when there are no hashtags", () => {
+    const authored = { title: "My Short", description: "A short clip" };
+    expect(applyHashtags("youtube", authored, [])).toBe(authored);
+    expect(applyHashtags("tiktok", authored, [])).toBe(authored);
   });
 });
