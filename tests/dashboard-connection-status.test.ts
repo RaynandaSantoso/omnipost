@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
-import { instagramConnectionStatusText, JobOutcome, tiktokConnectionStatusText, transferPercent, youtubeConnectionStatusText } from "@/app/page";
+import { instagramConnectionStatusText, JobMetadataEditor, JobOutcome, JobStatusDetails, OutboundTextPreview, overrideDraftFor, parseHashtagInput, PlatformConnectionSection, PlatformOverrideEditors, tiktokConnectionStatusText, transferPercent, uploadTargetPlatforms, youtubeConnectionStatusText } from "@/app/page";
+import type { ConnectablePlatform, ConnectionStatus } from "@/lib/connection-status";
 
 describe("youtubeConnectionStatusText", () => {
   it("renders the label when connected and labeled", () => {
@@ -118,6 +119,71 @@ describe("instagramConnectionStatusText", () => {
   });
 });
 
+describe("uploadTargetPlatforms", () => {
+  const link = (connected: boolean): ConnectionStatus => ({
+    connected,
+    externalAccountId: "acct-1",
+    externalAccountLabel: null,
+    reconnectNeeded: false,
+  });
+
+  it("targets every connected platform, in dashboard order", () => {
+    expect(uploadTargetPlatforms({
+      youtube: link(true),
+      tiktok: link(false),
+      instagram: link(true),
+    })).toEqual(["youtube", "instagram"]);
+  });
+
+  it("falls back to a dry run when nothing is connected", () => {
+    expect(uploadTargetPlatforms({ youtube: null, tiktok: link(false), instagram: null }))
+      .toEqual(["dry-run"]);
+  });
+});
+
+describe("PlatformConnectionSection", () => {
+  const render = (platform: ConnectablePlatform, connection: ConnectionStatus | null) =>
+    renderToStaticMarkup(createElement(PlatformConnectionSection, {
+      platform,
+      connection,
+      onDisconnect: () => {},
+    }));
+
+  it("offers each platform's own connect link when it is not connected", () => {
+    for (const [platform, label] of [
+      ["youtube", "YouTube"],
+      ["tiktok", "TikTok"],
+      ["instagram", "Instagram"],
+    ] as const) {
+      const html = render(platform, null);
+      expect(html).toContain(`href="/api/platforms/${platform}/connect"`);
+      expect(html).toContain(`Connect ${label}`);
+      expect(html).toContain("Not connected");
+      expect(html).not.toContain("Disconnect");
+    }
+  });
+
+  it("swaps the connect link for a disconnect button once connected", () => {
+    const html = render("youtube", {
+      connected: true,
+      externalAccountId: "chan-1",
+      externalAccountLabel: "My Channel",
+      reconnectNeeded: false,
+    });
+    expect(html).toContain("Connected to My Channel");
+    expect(html).toContain("Disconnect");
+    expect(html).not.toContain("/api/platforms/youtube/connect");
+  });
+
+  it("keeps each platform's disclaimer with that platform", () => {
+    expect(render("tiktok", null)).toContain("Posts are private (SELF_ONLY)");
+    expect(render("instagram", null)).toContain("Instagram Business or Creator account");
+    const youtube = render("youtube", null);
+    expect(youtube).not.toContain("SELF_ONLY");
+    expect(youtube).not.toContain("Business or Creator");
+  });
+});
+
 describe("JobOutcome", () => {
   it("renders a completed TikTok job as a private post", () => {
     const html = renderToStaticMarkup(createElement(JobOutcome, { job: { id: "job-1", platform: "tiktok", status: "done", resultUrl: "tiktok://publish/1", error: null }, onRetry: () => {} }));
@@ -183,5 +249,309 @@ describe("transferPercent", () => {
 
   it("shows nothing when the upload size is unknown", () => {
     expect(transferPercent(uploading, undefined)).toBeNull();
+  });
+});
+
+describe("parseHashtagInput", () => {
+  it.each([
+    ["launch demo", ["launch", "demo"]],
+    ["launch, demo", ["launch", "demo"]],
+    ["  launch   demo  ", ["launch", "demo"]],
+    ["", []],
+    ["   ", []],
+  ])("splits free text into a hashtag list", (raw, expected) => {
+    expect(parseHashtagInput(raw)).toEqual(expected);
+  });
+});
+
+describe("OutboundTextPreview", () => {
+  it("shows the exact declared outbound fields for each connected platform", () => {
+    const html = renderToStaticMarkup(createElement(OutboundTextPreview, {
+      platforms: ["youtube", "tiktok", "instagram"],
+      title: "My Short",
+      description: "A short clip",
+    }));
+
+    expect(html).toContain("YouTube");
+    expect(html).toContain("TikTok");
+    expect(html).toContain("Instagram");
+    expect(html.match(/>Title</g)).toHaveLength(1);
+    expect(html.match(/>Description</g)).toHaveLength(1);
+    expect(html.match(/>Caption</g)).toHaveLength(2);
+    expect(html.match(/My Short\nA short clip/g)).toHaveLength(2);
+  });
+
+  it("shows override-resolved outbound text instead of stale shared text", () => {
+    const html = renderToStaticMarkup(createElement(OutboundTextPreview, {
+      platforms: ["youtube", "tiktok"],
+      title: "Shared title",
+      description: "Shared description",
+      overrides: {
+        youtube: { title: "YouTube title", description: "YouTube description" },
+        tiktok: { title: "Finished TikTok caption" },
+      },
+    }));
+
+    expect(html).toContain("YouTube title");
+    expect(html).toContain("YouTube description");
+    expect(html).toContain("Finished TikTok caption");
+    expect(html).not.toContain("Finished TikTok caption\nShared description");
+  });
+
+  it("shows the composed hashtags per platform's convention", () => {
+    const html = renderToStaticMarkup(createElement(OutboundTextPreview, {
+      platforms: ["youtube", "tiktok"],
+      title: "My Short",
+      description: "A short clip",
+      hashtags: ["launch", "demo"],
+    }));
+
+    expect(html).toContain("A short clip\n\n#launch #demo");
+    expect(html).toContain("My Short\nA short clip #launch #demo");
+  });
+
+  it("reflects a per-platform hashtag override without changing a sibling platform's shared hashtags", () => {
+    const html = renderToStaticMarkup(createElement(OutboundTextPreview, {
+      platforms: ["youtube", "tiktok"],
+      title: "My Short",
+      description: "A short clip",
+      hashtags: ["launch", "demo"],
+      overrides: {
+        youtube: { hashtags: ["tiktokonly"] },
+      },
+    }));
+
+    expect(html).toContain("A short clip\n\n#tiktokonly");
+    expect(html).toContain("My Short\nA short clip #launch #demo");
+    expect(html).not.toContain("#launch #demo #tiktokonly");
+  });
+});
+
+describe("PlatformOverrideEditors", () => {
+  it("starts shape-aware drafts from the exact shared outbound text", () => {
+    const shared = { title: "Shared title", description: "Shared description" };
+
+    expect(overrideDraftFor("youtube", shared)).toEqual({
+      title: "Shared title",
+      description: "Shared description",
+      hashtags: [],
+    });
+    expect(overrideDraftFor("tiktok", shared)).toEqual({
+      title: "Shared title\nShared description",
+      hashtags: [],
+    });
+    expect(overrideDraftFor("instagram", shared)).toEqual({
+      title: "Shared title\nShared description",
+      hashtags: [],
+    });
+  });
+
+  it("seeds the draft's hashtags from the Upload's shared hashtag set", () => {
+    const shared = { title: "Shared title", description: "Shared description" };
+
+    expect(overrideDraftFor("youtube", shared, ["launch", "demo"])).toEqual({
+      title: "Shared title",
+      description: "Shared description",
+      hashtags: ["launch", "demo"],
+    });
+  });
+
+  it("renders collapsed editors and distinguishes shared from overridden targets", () => {
+    const html = renderToStaticMarkup(createElement(PlatformOverrideEditors, {
+      platforms: ["youtube", "tiktok", "instagram"],
+      title: "Shared title",
+      description: "Shared description",
+      hashtags: ["launch"],
+      overrides: {
+        youtube: { title: "YouTube title", description: "YouTube description" },
+      },
+      onChange: () => {},
+    }));
+
+    expect(html).not.toContain("<details open");
+    expect(html.match(/>Shared</g)).toHaveLength(2);
+    expect(html.match(/>Overridden</g)).toHaveLength(1);
+    expect(html.match(/>Customize</g)).toHaveLength(2);
+    expect(html).toContain("Clear override");
+    expect(html).toContain('name="overrides.youtube.title"');
+    expect(html).toContain('value="YouTube title"');
+    expect(html).toContain('name="overrides.youtube.description"');
+    expect(html).toContain(">YouTube description</textarea>");
+    expect(html).toContain('name="overrides.youtube.hashtags"');
+  });
+
+  it("shows the shared hashtag set for a target with no override yet", () => {
+    const html = renderToStaticMarkup(createElement(PlatformOverrideEditors, {
+      platforms: ["youtube"],
+      title: "Shared title",
+      description: "Shared description",
+      hashtags: ["launch", "demo"],
+      overrides: {},
+      onChange: () => {},
+    }));
+
+    expect(html).toContain("#launch #demo");
+  });
+});
+
+describe("JobMetadataEditor", () => {
+  const baseJob = {
+    id: "job-1",
+    platform: "youtube" as const,
+    status: "pending" as const,
+    resultUrl: null,
+    error: null,
+    titleOverride: "YouTube title",
+    descriptionOverride: null,
+    metadataSource: "overridden" as const,
+    effectiveMetadata: { title: "YouTube title", description: "Shared description" },
+    metadataAppliesTo: "next-attempt" as const,
+  };
+
+  it("shows source and shape-aware title-and-description controls", () => {
+    const html = renderToStaticMarkup(createElement(JobMetadataEditor, {
+      job: baseJob,
+      onSave: () => {},
+    }));
+
+    expect(html).toContain("Overridden");
+    expect(html).toContain('name="job-job-1-title"');
+    expect(html).toContain('name="job-job-1-description"');
+    expect(html).toContain("Clear override");
+  });
+
+  it("uses one caption control and explains edits during an active attempt", () => {
+    const html = renderToStaticMarkup(createElement(JobMetadataEditor, {
+      job: {
+        ...baseJob,
+        platform: "tiktok",
+        status: "uploading",
+        titleOverride: "Finished caption",
+        descriptionOverride: null,
+        effectiveMetadata: { title: "Finished caption", description: "" },
+        metadataAppliesTo: "future-attempt",
+      },
+      onSave: () => {},
+    }));
+
+    expect(html).toContain("Caption");
+    expect(html).not.toContain('name="job-job-1-description"');
+    expect(html).toContain("future attempt");
+  });
+
+  it("starts a shared caption draft with the complete composed caption", () => {
+    const html = renderToStaticMarkup(createElement(JobMetadataEditor, {
+      job: {
+        ...baseJob,
+        platform: "instagram",
+        titleOverride: null,
+        descriptionOverride: null,
+        metadataSource: "shared",
+        effectiveMetadata: { title: "Shared title", description: "Shared description" },
+      },
+      onSave: () => {},
+    }));
+
+    expect(html).toContain(">Shared title\nShared description</textarea>");
+  });
+
+  it("edits future text while separately auditing an active attempt snapshot", () => {
+    const html = renderToStaticMarkup(createElement(JobMetadataEditor, {
+      job: {
+        ...baseJob,
+        platform: "tiktok",
+        status: "uploading",
+        titleOverride: null,
+        descriptionOverride: null,
+        overrideSource: "shared",
+        metadataSource: "overridden",
+        effectiveMetadata: { title: "Caption currently in flight", description: "" },
+        savedMetadata: { title: "Future shared title", description: "Future shared description" },
+      },
+      onSave: () => {},
+    }));
+
+    expect(html).toContain("Future shared title\nFuture shared description");
+    expect(html).not.toContain("Caption currently in flight");
+  });
+
+  it("seeds the hashtags input from a Job's own override, not the Upload's shared set", () => {
+    const html = renderToStaticMarkup(createElement(JobMetadataEditor, {
+      job: { ...baseJob, hashtagsOverride: ["tiktokonly"] },
+      sharedHashtags: ["launch", "demo"],
+      onSave: () => {},
+    }));
+
+    expect(html).toContain('name="job-job-1-hashtags"');
+    expect(html).toContain('value="tiktokonly"');
+  });
+
+  it("seeds the hashtags input from the Upload's shared set when the Job has no override", () => {
+    const html = renderToStaticMarkup(createElement(JobMetadataEditor, {
+      job: { ...baseJob, hashtagsOverride: null },
+      sharedHashtags: ["launch", "demo"],
+      onSave: () => {},
+    }));
+
+    expect(html).toContain('value="launch demo"');
+  });
+});
+
+describe("JobStatusDetails", () => {
+  it("renders an overridden YouTube title and description beside current progress", () => {
+    const html = renderToStaticMarkup(createElement(JobStatusDetails, {
+      job: {
+        id: "youtube-job",
+        platform: "youtube",
+        status: "uploading",
+        resultUrl: null,
+        error: null,
+        bytesUploaded: 512,
+        metadataSource: "overridden",
+        effectiveMetadata: {
+          title: "Exact YouTube title",
+          description: "Exact YouTube description",
+        },
+      },
+      fileSize: 2048,
+      onRetry: () => {},
+      onSaveMetadata: () => {},
+    }));
+
+    expect(html).toContain("Uploading 25%");
+    expect(html).toContain("Overridden");
+    expect(html).toContain("Title");
+    expect(html).toContain("Exact YouTube title");
+    expect(html).toContain("Description");
+    expect(html).toContain("Exact YouTube description");
+  });
+
+  it.each([
+    ["instagram" as const, "instagram://media/media-123", "Published to Instagram (media media-123)"],
+    ["tiktok" as const, "tiktok://publish/video-123", "Posted privately to your TikTok account (SELF_ONLY)."],
+  ])("renders the exact shared %s caption beside historical outcome details", (platform, resultUrl, outcome) => {
+    const html = renderToStaticMarkup(createElement(JobStatusDetails, {
+      job: {
+        id: `${platform}-job`,
+        platform,
+        status: "done",
+        resultUrl,
+        error: null,
+        metadataSource: "shared",
+        effectiveMetadata: {
+          title: "Shared title",
+          description: "Shared description",
+        },
+      },
+      history: true,
+      onRetry: () => {},
+      onSaveMetadata: () => {},
+    }));
+
+    expect(html).toContain("Done");
+    expect(html).toContain("Shared");
+    expect(html).toContain("Caption");
+    expect(html).toContain("Shared title\nShared description");
+    expect(html).toContain(outcome);
   });
 });

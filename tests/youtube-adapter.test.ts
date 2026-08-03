@@ -10,6 +10,8 @@ import { UNTRACKED_TRANSFER, type ResumableTransfer } from "@/lib/platform-adapt
 
 const uploadServer = setupServer();
 const youtubeUploadUrl = "https://www.googleapis.com/upload/youtube/v3/videos";
+const tiktokInitUrl = "https://open.tiktokapis.com/v2/post/publish/video/init/";
+const tiktokStatusUrl = "https://open.tiktokapis.com/v2/post/publish/status/fetch/";
 
 describe("YouTubeAdapter", () => {
   let dir: string;
@@ -21,6 +23,10 @@ describe("YouTubeAdapter", () => {
     process.env.YOUTUBE_CLIENT_ID = "client-id";
     process.env.YOUTUBE_CLIENT_SECRET = "client-secret";
     process.env.YOUTUBE_REDIRECT_URI = "http://localhost/api/platforms/youtube/callback";
+    process.env.TIKTOK_CLIENT_KEY = "client-key";
+    process.env.TIKTOK_CLIENT_SECRET = "client-secret";
+    process.env.PUBLIC_BASE_URL = "https://omnipost.test";
+    process.env.TIKTOK_REDIRECT_URI = "https://omnipost.test/api/platforms/tiktok/callback";
     process.env.TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString("base64");
     resetConfigCache();
     writeFileSync(path.join(dir, "test.db"), "");
@@ -94,6 +100,92 @@ describe("YouTubeAdapter", () => {
       transfer: UNTRACKED_TRANSFER,
     })).resolves.toEqual({ url: "https://www.youtube.com/watch?v=video-123" });
     expect(resumableUrl).toBeTruthy();
+  });
+
+  it("publishes one Job's override while a sibling sends shared metadata", async () => {
+    const user = await connectedUser();
+    const { prisma } = await import("@/lib/db");
+    const { encryptToken } = await import("@/lib/token-crypto");
+    await prisma.platformConnection.create({
+      data: {
+        userId: user.id,
+        platform: "tiktok",
+        accessTokenEncrypted: encryptToken("tiktok-access-token"),
+        refreshTokenEncrypted: encryptToken("tiktok-refresh-token"),
+        accessTokenExpiresAt: new Date(Date.now() + 60_000),
+        externalAccountId: "open-id-123",
+      },
+    });
+    const upload = await prisma.upload.create({
+      data: {
+        userId: user.id,
+        title: "Shared title",
+        description: "Shared description",
+        fileName: "clip.mp4",
+        filePath: videoPath,
+        fileSize: 11,
+        jobs: {
+          create: [
+            {
+              platform: "youtube",
+              status: "pending",
+              titleOverride: "YouTube title",
+              descriptionOverride: "YouTube description",
+            },
+            { platform: "tiktok", status: "pending" },
+          ],
+        },
+      },
+      include: { jobs: true },
+    });
+    uploadServer.use(
+      http.post(youtubeUploadUrl, async ({ request }) => {
+        await expect(request.json()).resolves.toMatchObject({
+          snippet: {
+            title: "YouTube title",
+            description: "YouTube description",
+          },
+        });
+        return new HttpResponse(null, {
+          status: 200,
+          headers: { Location: "https://upload.youtube.test/session/override" },
+        });
+      }),
+      http.put("https://upload.youtube.test/session/override", () =>
+        HttpResponse.json({ id: "video-override" }),
+      ),
+      http.post(tiktokInitUrl, async ({ request }) => {
+        await expect(request.json()).resolves.toMatchObject({
+          post_info: { title: "Shared title\nShared description" },
+        });
+        return HttpResponse.json({
+          data: {
+            publish_id: "publish-shared",
+            upload_url: "https://upload.tiktok.test/video/shared",
+          },
+          error: { code: "ok" },
+        });
+      }),
+      http.put("https://upload.tiktok.test/video/shared", () =>
+        new HttpResponse(null, { status: 201 }),
+      ),
+      http.post(tiktokStatusUrl, () => HttpResponse.json({
+        data: { status: "PUBLISH_COMPLETE" },
+        error: { code: "ok" },
+      })),
+    );
+    const { createJobEngine } = await import("@/lib/job-engine");
+
+    await createJobEngine().tick();
+
+    const jobs = await prisma.job.findMany({
+      where: { uploadId: upload.id },
+      orderBy: { platform: "asc" },
+    });
+    expect(jobs.map((job) => [job.platform, job.status, job.resultUrl])).toEqual([
+      ["tiktok", "done", "tiktok://publish/publish-shared"],
+      ["youtube", "done", "https://www.youtube.com/watch?v=video-override"],
+    ]);
   });
 
   describe("chunked transfer", () => {

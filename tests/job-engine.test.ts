@@ -67,7 +67,7 @@ describe("job engine", () => {
 
   async function seedJob(
     job: Record<string, unknown> = {},
-  ): Promise<{ id: string }> {
+  ): Promise<{ id: string; uploadId: string }> {
     const { prisma, ensureSeedUser } = await import("@/lib/db");
     const user = await ensureSeedUser();
     const upload = await prisma.upload.create({
@@ -82,7 +82,7 @@ describe("job engine", () => {
       },
       include: { jobs: true },
     });
-    return { id: upload.jobs[0].id };
+    return { id: upload.jobs[0].id, uploadId: upload.id };
   }
 
   it("claims a runnable job, drives it to done, and releases the lease", async () => {
@@ -104,6 +104,254 @@ describe("job engine", () => {
     expect(job.leaseOwner).toBeNull();
     expect(job.leaseExpiresAt).toBeNull();
     expect(job.attempts).toBe(1);
+  });
+
+  it("supplies each adapter with that Job's resolved metadata snapshot", async () => {
+    const { createJobEngine } = await import("@/lib/job-engine");
+    const { prisma, ensureSeedUser } = await import("@/lib/db");
+    const user = await ensureSeedUser();
+    await prisma.upload.create({
+      data: {
+        userId: user.id,
+        title: "Shared title",
+        description: "Shared description",
+        fileName: "clip.mp4",
+        filePath: "/tmp/clip.mp4",
+        fileSize: 1024,
+        jobs: {
+          create: [
+            {
+              platform: "youtube",
+              status: "pending",
+              titleOverride: "YouTube title",
+              descriptionOverride: "YouTube description",
+            },
+            { platform: "instagram", status: "pending" },
+          ],
+        },
+      },
+    });
+    const received = new Map<string, Pick<UploadMetadata, "title" | "description">>();
+    const engine = createJobEngine({
+      resolveAdapter: (platform) => adapterOf(async (metadata) => {
+        received.set(platform, {
+          title: metadata.title,
+          description: metadata.description,
+        });
+        return { url: `https://example.test/${platform}` };
+      }),
+    });
+
+    await engine.tick();
+
+    expect(Object.fromEntries(received)).toEqual({
+      youtube: { title: "YouTube title", description: "YouTube description" },
+      instagram: { title: "Shared title", description: "Shared description" },
+    });
+  });
+
+  it("composes the Upload's shared hashtags into what each adapter actually receives", async () => {
+    const { createJobEngine } = await import("@/lib/job-engine");
+    const { prisma, ensureSeedUser } = await import("@/lib/db");
+    const user = await ensureSeedUser();
+    const upload = await prisma.upload.create({
+      data: {
+        userId: user.id,
+        title: "Shared title",
+        description: "Shared description",
+        hashtags: JSON.stringify(["launch", "demo"]),
+        fileName: "clip.mp4",
+        filePath: "/tmp/clip.mp4",
+        fileSize: 1024,
+        jobs: {
+          create: [
+            { platform: "youtube", status: "pending" },
+            { platform: "tiktok", status: "pending" },
+          ],
+        },
+      },
+      include: { jobs: true },
+    });
+    const received = new Map<string, Pick<UploadMetadata, "title" | "description">>();
+    const engine = createJobEngine({
+      resolveAdapter: (platform) => adapterOf(async (metadata) => {
+        received.set(platform, {
+          title: metadata.title,
+          description: metadata.description,
+        });
+        return { url: `https://example.test/${platform}` };
+      }),
+    });
+
+    await engine.tick();
+
+    expect(Object.fromEntries(received)).toEqual({
+      youtube: { title: "Shared title", description: "Shared description\n\n#launch #demo" },
+      tiktok: { title: "Shared title", description: "Shared description #launch #demo" },
+    });
+
+    const jobs = await prisma.job.findMany({ where: { uploadId: upload.id } });
+    for (const job of jobs) {
+      expect(job.resolvedDescription).toContain("#launch #demo");
+    }
+  });
+
+  it("composes one Job's overridden hashtags without changing a sibling Job's shared set", async () => {
+    const { createJobEngine } = await import("@/lib/job-engine");
+    const { ensureSeedUser } = await import("@/lib/db");
+    const user = await ensureSeedUser();
+    const { prisma } = await import("@/lib/db");
+    await prisma.upload.create({
+      data: {
+        userId: user.id,
+        title: "Shared title",
+        description: "Shared description",
+        hashtags: JSON.stringify(["launch", "demo"]),
+        fileName: "clip.mp4",
+        filePath: "/tmp/clip.mp4",
+        fileSize: 1024,
+        jobs: {
+          create: [
+            {
+              platform: "youtube",
+              status: "pending",
+              hashtagsOverride: JSON.stringify(["tiktokonly"]),
+            },
+            { platform: "tiktok", status: "pending" },
+          ],
+        },
+      },
+    });
+    const received = new Map<string, Pick<UploadMetadata, "title" | "description">>();
+    const engine = createJobEngine({
+      resolveAdapter: (platform) => adapterOf(async (metadata) => {
+        received.set(platform, {
+          title: metadata.title,
+          description: metadata.description,
+        });
+        return { url: `https://example.test/${platform}` };
+      }),
+    });
+
+    await engine.tick();
+
+    expect(Object.fromEntries(received)).toEqual({
+      youtube: { title: "Shared title", description: "Shared description\n\n#tiktokonly" },
+      tiktok: { title: "Shared title", description: "Shared description #launch #demo" },
+    });
+  });
+
+  it("claims the latest saved metadata and freezes it until a later retry", async () => {
+    const { createJobEngine } = await import("@/lib/job-engine");
+    const { PATCH } = await import("@/app/api/jobs/[id]/metadata/route");
+    const { prisma } = await import("@/lib/db");
+    const clock = fakeClock();
+    const { id, uploadId } = await seedJob({
+      platform: "youtube",
+      titleOverride: "Initial title",
+      descriptionOverride: "Initial description",
+    });
+    const updateMetadata = (title: string) => PATCH(new Request(
+      `http://localhost/api/jobs/${id}/metadata`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title, description: "Saved description" }),
+      },
+    ), { params: Promise.resolve({ id }) });
+    await updateMetadata("Latest pending title");
+
+    const received: Array<Pick<UploadMetadata, "title" | "description">> = [];
+    let attempt = 0;
+    let firstStarted!: () => void;
+    let finishFirst!: () => void;
+    const started = new Promise<void>((resolve) => { firstStarted = resolve; });
+    const firstMayFinish = new Promise<void>((resolve) => { finishFirst = resolve; });
+    const engine = createJobEngine({
+      clock,
+      backoffBaseMs: 1,
+      random: () => 0,
+      resolveAdapter: () => adapterOf(async (metadata) => {
+        received.push({ title: metadata.title, description: metadata.description });
+        attempt += 1;
+        if (attempt === 1) {
+          firstStarted();
+          await firstMayFinish;
+          throw new AdapterFailure("try again", "retryable");
+        }
+        return { url: "https://example.test/retried" };
+      }),
+    });
+
+    const activeAttempt = engine.tick();
+    await started;
+    const edit = await updateMetadata("Future retry title");
+    expect(edit.status).toBe(200);
+    expect((await edit.json()).appliesTo).toBe("future-attempt");
+    const { GET } = await import("@/app/api/uploads/[id]/route");
+    const status = await GET(
+      new Request(`http://localhost/api/uploads/${uploadId}`),
+      { params: Promise.resolve({ id: uploadId }) },
+    );
+    expect((await status.json()).jobs[0]).toMatchObject({
+      titleOverride: "Future retry title",
+      overrideSource: "overridden",
+      metadataSource: "overridden",
+      effectiveMetadata: {
+        title: "Latest pending title",
+        description: "Saved description",
+      },
+    });
+    expect(received[0]).toEqual({
+      title: "Latest pending title",
+      description: "Saved description",
+    });
+    finishFirst();
+    await activeAttempt;
+
+    const pending = await prisma.job.findUniqueOrThrow({ where: { id } });
+    clock.advance(pending.nextAttemptAt!.getTime() - clock.date().getTime() + 1);
+    await engine.tick();
+
+    expect(received).toEqual([
+      { title: "Latest pending title", description: "Saved description" },
+      { title: "Future retry title", description: "Saved description" },
+    ]);
+  });
+
+  it("keeps a caption-only edit finished across a retry", async () => {
+    const { createJobEngine } = await import("@/lib/job-engine");
+    const { prisma } = await import("@/lib/db");
+    const clock = fakeClock();
+    const { id } = await seedJob({
+      platform: "tiktok",
+      titleOverride: "Finished caption #one",
+    });
+    const received: Array<Pick<UploadMetadata, "title" | "description">> = [];
+    const engine = createJobEngine({
+      clock,
+      backoffBaseMs: 1,
+      random: () => 0,
+      resolveAdapter: () => adapterOf(async (metadata) => {
+        received.push({ title: metadata.title, description: metadata.description });
+        if (received.length === 1) throw new AdapterFailure("try again", "retryable");
+        return { url: "https://example.test/tiktok/retried" };
+      }),
+    });
+
+    await engine.tick();
+    await prisma.job.update({
+      where: { id },
+      data: { titleOverride: "Finished caption #two" },
+    });
+    const pending = await prisma.job.findUniqueOrThrow({ where: { id } });
+    clock.advance(pending.nextAttemptAt!.getTime() - clock.date().getTime() + 1);
+    await engine.tick();
+
+    expect(received).toEqual([
+      { title: "Finished caption #one", description: "" },
+      { title: "Finished caption #two", description: "" },
+    ]);
   });
 
   it("finishes one platform job when another platform job fails", async () => {

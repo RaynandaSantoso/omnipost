@@ -10,6 +10,8 @@ function uploadRequest(fields: {
   title?: string;
   description?: string;
   platform?: string;
+  overrides?: unknown;
+  hashtags?: unknown;
 }) {
   const body = new FormData();
   if (fields.video !== undefined && fields.video !== null) {
@@ -23,6 +25,12 @@ function uploadRequest(fields: {
   }
   if (fields.platform !== undefined) {
     body.set("platform", fields.platform);
+  }
+  if (fields.overrides !== undefined) {
+    body.set("overrides", JSON.stringify(fields.overrides));
+  }
+  if (fields.hashtags !== undefined) {
+    body.set("hashtags", JSON.stringify(fields.hashtags));
   }
   return new Request("http://localhost/api/uploads", {
     method: "POST",
@@ -78,6 +86,10 @@ describe("POST /api/uploads", () => {
     expect(upload?.fileName).toBe("clip.mp4");
     expect(upload?.jobs).toHaveLength(1);
     expect(upload?.jobs[0].status).toBe("pending");
+    expect(upload?.jobs[0]).toMatchObject({
+      titleOverride: null,
+      descriptionOverride: null,
+    });
   });
 
   it("fans one upload out to connected YouTube, TikTok, and Instagram jobs", async () => {
@@ -125,6 +137,160 @@ describe("POST /api/uploads", () => {
     expect(response.status).toBe(201);
     expect((await response.json()).jobs.map((job: { platform: string }) => job.platform).sort())
       .toEqual(["instagram", "tiktok", "youtube"]);
+  });
+
+  it("persists an override on its target Job without changing the shared Upload text", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const { prisma } = await import("@/lib/db");
+
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "Shared title",
+      description: "Shared description",
+      platform: "youtube",
+      overrides: {
+        youtube: {
+          title: "YouTube title",
+          description: "YouTube description",
+        },
+      },
+    }));
+
+    expect(response.status).toBe(201);
+    const created = await response.json();
+    const upload = await prisma.upload.findUniqueOrThrow({
+      where: { id: created.id },
+      include: { jobs: true },
+    });
+    expect(upload).toMatchObject({
+      title: "Shared title",
+      description: "Shared description",
+    });
+    expect(upload.jobs[0]).toMatchObject({
+      platform: "youtube",
+      titleOverride: "YouTube title",
+      descriptionOverride: "YouTube description",
+    });
+  });
+
+  it("stores a shared hashtag set on the Upload", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const { prisma } = await import("@/lib/db");
+
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "My Short",
+      description: "A short clip",
+      hashtags: ["launch", "demo"],
+    }));
+
+    expect(response.status).toBe(201);
+    const created = await response.json();
+    expect(created.hashtags).toEqual(["launch", "demo"]);
+    const upload = await prisma.upload.findUniqueOrThrow({ where: { id: created.id } });
+    expect(JSON.parse(upload.hashtags)).toEqual(["launch", "demo"]);
+  });
+
+  it("persists a per-platform hashtag override on its target Job without changing the shared Upload hashtags", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const { prisma } = await import("@/lib/db");
+
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "Shared title",
+      description: "Shared description",
+      platform: "youtube",
+      hashtags: ["launch", "demo"],
+      overrides: {
+        youtube: { hashtags: ["tiktokonly"] },
+      },
+    }));
+
+    expect(response.status).toBe(201);
+    const created = await response.json();
+    const upload = await prisma.upload.findUniqueOrThrow({
+      where: { id: created.id },
+      include: { jobs: true },
+    });
+    expect(JSON.parse(upload.hashtags)).toEqual(["launch", "demo"]);
+    expect(JSON.parse(upload.jobs[0].hashtagsOverride!)).toEqual(["tiktokonly"]);
+  });
+
+  it("rejects a malformed hashtags field", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "My Short",
+      description: "A short clip",
+      hashtags: { not: "an array" },
+    }));
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain("hashtags");
+  });
+
+  it("rejects an override for a platform outside the Upload fan-out", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "Shared title",
+      description: "Shared description",
+      platform: "youtube",
+      overrides: { tiktok: { title: "Wrong target" } },
+    }));
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain("not included");
+  });
+
+  it("rejects an unregistered override platform at the request boundary", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "Shared title",
+      description: "Shared description",
+      platform: "youtube",
+      overrides: { facebook: { title: "Unsupported" } },
+    }));
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain("unsupported override platform");
+  });
+
+  it("stores a caption-only override as one finished caption", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const { prisma } = await import("@/lib/db");
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "Shared title",
+      description: "Shared description",
+      platform: "tiktok",
+      overrides: { tiktok: { title: "Finished caption #shorts" } },
+    }));
+
+    expect(response.status).toBe(201);
+    const created = await response.json();
+    const job = await prisma.job.findUniqueOrThrow({
+      where: { id: created.jobs[0].id },
+    });
+    expect(job.titleOverride).toBe("Finished caption #shorts");
+    expect(job.descriptionOverride).toBeNull();
+  });
+
+  it("rejects a separate description for a caption-only override", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "Shared title",
+      description: "Shared description",
+      platform: "instagram",
+      overrides: {
+        instagram: { title: "Finished caption", description: "Append me" },
+      },
+    }));
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain("one finished caption");
   });
 
   it("rejects an oversized explicit TikTok upload before saving the file", async () => {

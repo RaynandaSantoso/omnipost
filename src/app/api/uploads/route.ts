@@ -1,8 +1,69 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { ensureSeedUser, prisma } from "@/lib/db";
 import { createUpload, UploadValidationError } from "@/lib/uploads";
 import { platformSchema, type Platform } from "@/lib/platform";
 import { logError } from "@/lib/log";
+import type { PlatformTextOverrides } from "@/lib/platform-upload-policy";
+import { jobMetadataState, sharedUploadText } from "@/lib/job-metadata";
+
+const textOverrideSchema = z.object({
+  title: z.string().optional(),
+  description: z.string().optional(),
+  hashtags: z.array(z.string()).optional(),
+}).strict();
+
+function hashtagsFrom(formData: FormData): string[] | NextResponse {
+  const raw = formData.get("hashtags");
+  if (raw === null) return [];
+  if (typeof raw !== "string") {
+    return NextResponse.json({ error: "hashtags must be JSON text" }, { status: 400 });
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return NextResponse.json({ error: "hashtags must be valid JSON" }, { status: 400 });
+  }
+  const parsed = z.array(z.string()).safeParse(value);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "hashtags must be an array of strings" }, { status: 400 });
+  }
+  return parsed.data;
+}
+
+function overridesFrom(formData: FormData): PlatformTextOverrides | NextResponse {
+  const raw = formData.get("overrides");
+  if (raw === null) return {};
+  if (typeof raw !== "string") {
+    return NextResponse.json({ error: "overrides must be JSON text" }, { status: 400 });
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return NextResponse.json({ error: "overrides must be valid JSON" }, { status: 400 });
+  }
+  const record = z.record(z.string(), textOverrideSchema).safeParse(value);
+  if (!record.success) {
+    return NextResponse.json({ error: "overrides must map platforms to text fields" }, { status: 400 });
+  }
+
+  const overrides: PlatformTextOverrides = {};
+  for (const [valuePlatform, override] of Object.entries(record.data)) {
+    const parsedPlatform = platformSchema.safeParse(valuePlatform);
+    if (!parsedPlatform.success) {
+      return NextResponse.json(
+        { error: `unsupported override platform "${valuePlatform}"` },
+        { status: 400 },
+      );
+    }
+    overrides[parsedPlatform.data] = override;
+  }
+  return overrides;
+}
 
 export async function GET() {
   try {
@@ -15,6 +76,7 @@ export async function GET() {
       id: upload.id,
       title: upload.title,
       description: upload.description,
+      hashtags: sharedUploadText(upload).hashtags,
       fileName: upload.fileName,
       createdAt: upload.createdAt,
       jobs: upload.jobs.map((job) => ({
@@ -23,6 +85,7 @@ export async function GET() {
         status: job.status,
         resultUrl: job.resultUrl,
         error: job.error,
+        ...jobMetadataState(job, sharedUploadText(upload)),
       })),
     })));
   } catch (error) {
@@ -82,19 +145,32 @@ export async function POST(request: Request) {
     platform = parsed.data;
   }
 
+  const overrides = overridesFrom(formData);
+  if (overrides instanceof NextResponse) return overrides;
+
+  const hashtags = hashtagsFrom(formData);
+  if (hashtags instanceof NextResponse) return hashtags;
+
   try {
     const user = await ensureSeedUser();
-    const upload = await createUpload({ userId: user.id, title, description, file, platform });
+    const upload = await createUpload({ userId: user.id, title, description, file, platform, overrides, hashtags });
 
     return NextResponse.json(
       {
         id: upload.id,
+        title: upload.title,
+        description: upload.description,
+        hashtags: sharedUploadText(upload).hashtags,
+        fileName: upload.fileName,
+        fileSize: upload.fileSize,
+        createdAt: upload.createdAt,
         jobs: upload.jobs.map((job) => ({
           id: job.id,
           platform: job.platform,
           status: job.status,
           resultUrl: job.resultUrl,
           error: job.error,
+          ...jobMetadataState(job, sharedUploadText(upload)),
         })),
       },
       { status: 201 },

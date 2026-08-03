@@ -63,6 +63,10 @@ model Upload {
   user        User     @relation(fields: [userId], references: [id])
   title       String
   description String
+  // JSON-encoded string array, e.g. ["launch", "demo"]. App-layer JSON, same
+  // pattern the metadata override request body already uses — not a Prisma
+  // Json column, to keep the shape explicit and validated at the boundary.
+  hashtags    String   @default("[]")
   fileName    String
   filePath    String
   fileSize    Int
@@ -81,6 +85,19 @@ model Job {
   status    String   @default("pending")
   resultUrl String?
   error     String?
+  // Optional per-platform authored text. Null means the Job inherits the
+  // corresponding shared value from its Upload.
+  titleOverride       String?
+  descriptionOverride String?
+  // JSON-encoded string array, same shape/encoding as Upload.hashtags. Null
+  // means the Job inherits the Upload's shared hashtag set; a non-null value
+  // (including "[]") replaces it entirely for this Job only.
+  hashtagsOverride    String?
+  // Exact text and source captured atomically with the latest claim. These
+  // keep active and historical status auditable when saved overrides change.
+  resolvedTitle        String?
+  resolvedDescription  String?
+  resolvedFromOverride Boolean?
   // Retry bookkeeping. attempts counts claims, not failures, so a worker
   // that crashes mid-upload burns an attempt too and a poisoned job can
   // never be reclaimed forever.

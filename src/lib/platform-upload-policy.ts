@@ -1,6 +1,80 @@
 import type { Platform } from "@/lib/platform";
 
+export interface AuthoredText {
+  title: string;
+  description: string;
+}
+
+export interface PlatformTextOverride {
+  title?: string;
+  description?: string;
+  hashtags?: string[];
+}
+
+export type PlatformTextOverrides = Partial<Record<Platform, PlatformTextOverride>>;
+
+export function platformTextOverrideViolation(
+  platform: Platform,
+  override: { title?: string | null; description?: string | null },
+): string | null {
+  const shape = uploadPolicyFor(platform).text;
+  if (shape.kind === "caption") {
+    if (override.description !== undefined && override.description !== null) {
+      return `${platform} accepts one finished caption override, not a separate description`;
+    }
+    if (
+      override.title !== undefined &&
+      override.title !== null &&
+      override.title.length > shape.captionMaxLength
+    ) {
+      return `${platform} caption must be ${shape.captionMaxLength} characters or fewer`;
+    }
+    return null;
+  }
+  if (
+    override.title !== undefined &&
+    override.title !== null &&
+    shape.titleMaxLength !== null &&
+    override.title.length > shape.titleMaxLength
+  ) {
+    return `${platform} title must be ${shape.titleMaxLength} characters or fewer`;
+  }
+  if (
+    override.description !== undefined &&
+    override.description !== null &&
+    shape.descriptionMaxLength !== null &&
+    override.description.length > shape.descriptionMaxLength
+  ) {
+    return `${platform} description must be ${shape.descriptionMaxLength} characters or fewer`;
+  }
+  return null;
+}
+
+interface TitleAndDescriptionTextShape {
+  kind: "title-and-description";
+  titleMaxLength: number | null;
+  descriptionMaxLength: number | null;
+}
+
+interface CaptionTextShape {
+  kind: "caption";
+  captionMaxLength: number;
+  compose: (authored: AuthoredText) => string;
+}
+
+export type PlatformTextShape =
+  | TitleAndDescriptionTextShape
+  | CaptionTextShape;
+
+export interface OutboundTextField {
+  key: "title" | "description" | "caption";
+  label: "Title" | "Description" | "Caption";
+  maxLength: number | null;
+  value: string;
+}
+
 interface PlatformUploadPolicy {
+  text: PlatformTextShape;
   maxFileSizeBytes?: number;
   oversizeMessage?: string;
   requireMatchingVideoExtension?: boolean;
@@ -8,10 +82,59 @@ interface PlatformUploadPolicy {
   unsupportedFormatMessage?: string;
 }
 
+export function composeCaption({ title, description }: AuthoredText): string {
+  return [title, description].filter(Boolean).join("\n");
+}
+
+export function formatHashtags(hashtags: string[]): string {
+  return hashtags
+    .map((tag) => tag.trim())
+    .filter(Boolean)
+    .map((tag) => (tag.startsWith("#") ? tag : `#${tag}`))
+    .join(" ");
+}
+
+// A caption platform (TikTok/Instagram) wants hashtags appended inline to
+// the end of the caption text; a title-and-description platform (YouTube)
+// wants them appended to the description, where it shows a hashtag as a
+// clickable tag. Both land in `description` — outboundTextFor composes it
+// into the final caption for caption platforms — so the only thing that
+// varies per platform is the join between the existing text and the tags.
+export function applyHashtags(
+  platform: Platform,
+  authored: AuthoredText,
+  hashtags: string[],
+): AuthoredText {
+  const tagText = formatHashtags(hashtags);
+  if (!tagText) return authored;
+  const isCaption = uploadPolicyFor(platform).text.kind === "caption";
+  return {
+    title: authored.title,
+    description: [authored.description, tagText].filter(Boolean).join(isCaption ? " " : "\n\n"),
+  };
+}
+
 const PLATFORM_UPLOAD_POLICIES = {
-  "dry-run": {},
-  youtube: {},
+  "dry-run": {
+    text: {
+      kind: "title-and-description",
+      titleMaxLength: null,
+      descriptionMaxLength: null,
+    },
+  },
+  youtube: {
+    text: {
+      kind: "title-and-description",
+      titleMaxLength: 100,
+      descriptionMaxLength: 5_000,
+    },
+  },
   instagram: {
+    text: {
+      kind: "caption",
+      captionMaxLength: 2_200,
+      compose: composeCaption,
+    },
     allowedVideoExtensions: ["mp4", "mov"],
     maxFileSizeBytes: 1024 * 1024 * 1024,
     oversizeMessage: "Instagram Reels must be 1 GB or smaller",
@@ -19,6 +142,11 @@ const PLATFORM_UPLOAD_POLICIES = {
     requireMatchingVideoExtension: true,
   },
   tiktok: {
+    text: {
+      kind: "caption",
+      captionMaxLength: 2_200,
+      compose: composeCaption,
+    },
     maxFileSizeBytes: 64 * 1024 * 1024,
     oversizeMessage: "TikTok whole-file uploads must be 64 MB or smaller",
     requireMatchingVideoExtension: true,
@@ -33,6 +161,35 @@ const VIDEO_TYPE_BY_EXTENSION: Record<string, string> = {
 
 export function uploadPolicyFor(platform: Platform): PlatformUploadPolicy {
   return PLATFORM_UPLOAD_POLICIES[platform];
+}
+
+export function outboundTextFor(
+  platform: Platform,
+  authored: AuthoredText,
+): OutboundTextField[] {
+  const shape = uploadPolicyFor(platform).text;
+  if (shape.kind === "caption") {
+    return [{
+      key: "caption",
+      label: "Caption",
+      maxLength: shape.captionMaxLength,
+      value: shape.compose(authored),
+    }];
+  }
+  return [
+    {
+      key: "title",
+      label: "Title",
+      maxLength: shape.titleMaxLength,
+      value: authored.title,
+    },
+    {
+      key: "description",
+      label: "Description",
+      maxLength: shape.descriptionMaxLength,
+      value: authored.description,
+    },
+  ];
 }
 
 export function uploadPolicyViolation(

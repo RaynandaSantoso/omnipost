@@ -9,6 +9,7 @@ import {
   type UploadMetadata,
   type UploadResult,
 } from "@/lib/platform-adapter";
+import { composeCaption } from "@/lib/platform-upload-policy";
 
 const GRAPH_BASE_URL = "https://graph.facebook.com/v23.0";
 const RATE_LIMIT_ERROR_CODES = new Set([4, 17, 32, 613]);
@@ -24,10 +25,6 @@ type GraphResponse = {
     message?: unknown;
   };
 };
-
-function captionFor(metadata: UploadMetadata): string {
-  return [metadata.title, metadata.description].filter(Boolean).join("\n");
-}
 
 async function responseBody(response: Response): Promise<GraphResponse | null> {
   return response.json().catch(() => null) as Promise<GraphResponse | null>;
@@ -156,7 +153,7 @@ export class InstagramAdapter implements PlatformAdapter {
     const createBody = new URLSearchParams({
       media_type: "REELS",
       video_url: videoUrl,
-      caption: captionFor(metadata),
+      caption: composeCaption(metadata),
       access_token: token,
     });
     const container = await graphRequest(

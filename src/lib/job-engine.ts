@@ -11,6 +11,7 @@ import {
 import { JOB_POLICY_DEFAULTS, type JobPolicy } from "@/lib/job-policy";
 import { logError } from "@/lib/log";
 import { JOB_STATUS } from "@/lib/job-status";
+import { resolveJobMetadata, sharedUploadText } from "@/lib/job-metadata";
 
 // The durable job engine. Jobs are rows in SQLite and the database is the
 // only source of truth: a worker claims a job by writing a time-bounded
@@ -24,6 +25,8 @@ interface JobTransferState {
   uploadSessionUrl: string | null;
   bytesUploaded: bigint | null;
 }
+
+type UploadMetadataSnapshot = Pick<UploadMetadata, "title" | "description">;
 
 export interface JobEngineOptions extends Partial<JobPolicy> {
   clock?: Clock;
@@ -106,19 +109,37 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
   // stalled long enough to lose a lease can otherwise reclaim its own
   // still-running job and pass the ownership guard twice, which is exactly
   // the double-upload the lease exists to prevent.
-  async function claim(jobId: string, now: Date): Promise<string | null> {
+  async function claim(
+    jobId: string,
+    now: Date,
+  ): Promise<{ lease: string; metadata: UploadMetadataSnapshot } | null> {
     const lease = `${workerId}:${randomUUID()}`;
-    const claimed = await prisma.job.updateMany({
-      where: { id: jobId, ...runnableWhere(now) },
-      data: {
-        status: JOB_STATUS.uploading,
-        leaseOwner: lease,
-        leaseExpiresAt: new Date(now.getTime() + leaseMs),
-        attempts: { increment: 1 },
-        nextAttemptAt: null,
-      },
+    return prisma.$transaction(async (transaction) => {
+      const current = await transaction.job.findUnique({
+        where: { id: jobId },
+        include: { upload: true },
+      });
+      if (!current) return null;
+      const metadata = resolveJobMetadata(current, sharedUploadText(current.upload));
+      const resolvedFromOverride =
+        current.titleOverride !== null
+        || current.descriptionOverride !== null
+        || current.hashtagsOverride !== null;
+      const claimed = await transaction.job.updateMany({
+        where: { id: jobId, ...runnableWhere(now) },
+        data: {
+          status: JOB_STATUS.uploading,
+          leaseOwner: lease,
+          leaseExpiresAt: new Date(now.getTime() + leaseMs),
+          attempts: { increment: 1 },
+          nextAttemptAt: null,
+          resolvedTitle: metadata.title,
+          resolvedDescription: metadata.description,
+          resolvedFromOverride,
+        },
+      });
+      return claimed.count === 1 ? { lease, metadata } : null;
     });
-    return claimed.count === 1 ? lease : null;
   }
 
   // Every post-claim write goes through here, so none of them can touch a
@@ -187,9 +208,12 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
       id: string;
       platform: string;
       attempts: number;
+      titleOverride: string | null;
+      descriptionOverride: string | null;
       upload: Omit<UploadMetadata, "transfer"> & { id: string };
     },
     lease: string,
+    metadata: UploadMetadataSnapshot,
   ): Promise<void> {
     const beat = setInterval(() => {
       updateHeldJob(job.id, lease, {
@@ -205,6 +229,7 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
       const adapter = resolveAdapter(job.platform);
       const result = await adapter.upload({
         ...job.upload,
+        ...metadata,
         uploadId: job.upload.id,
         transfer: transferTrackerFor(job, lease),
       });
@@ -287,14 +312,18 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
       // stay ordered to bound simultaneous video transfers and memory use.
       for (const uploadCandidates of byUpload.values()) {
         await Promise.all(uploadCandidates.map(async (candidate) => {
-          const lease = await claim(candidate.id, clock.now());
-          if (!lease) return;
+          const claimResult = await claim(candidate.id, clock.now());
+          if (!claimResult) return;
           const job = await prisma.job.findUnique({
             where: { id: candidate.id },
             include: { upload: true },
           });
           if (!job) return;
-          const running = runClaimedJob(job, lease);
+          const running = runClaimedJob(
+            job,
+            claimResult.lease,
+            claimResult.metadata,
+          );
           inFlight.add(running);
           try {
             await running;
