@@ -243,6 +243,22 @@ describe("OutboundTextPreview", () => {
     expect(html).toContain("A short clip\n\n#launch #demo");
     expect(html).toContain("My Short\nA short clip #launch #demo");
   });
+
+  it("reflects a per-platform hashtag override without changing a sibling platform's shared hashtags", () => {
+    const html = renderToStaticMarkup(createElement(OutboundTextPreview, {
+      platforms: ["youtube", "tiktok"],
+      title: "My Short",
+      description: "A short clip",
+      hashtags: ["launch", "demo"],
+      overrides: {
+        youtube: { hashtags: ["tiktokonly"] },
+      },
+    }));
+
+    expect(html).toContain("A short clip\n\n#tiktokonly");
+    expect(html).toContain("My Short\nA short clip #launch #demo");
+    expect(html).not.toContain("#launch #demo #tiktokonly");
+  });
 });
 
 describe("PlatformOverrideEditors", () => {
@@ -252,12 +268,25 @@ describe("PlatformOverrideEditors", () => {
     expect(overrideDraftFor("youtube", shared)).toEqual({
       title: "Shared title",
       description: "Shared description",
+      hashtags: [],
     });
     expect(overrideDraftFor("tiktok", shared)).toEqual({
       title: "Shared title\nShared description",
+      hashtags: [],
     });
     expect(overrideDraftFor("instagram", shared)).toEqual({
       title: "Shared title\nShared description",
+      hashtags: [],
+    });
+  });
+
+  it("seeds the draft's hashtags from the Upload's shared hashtag set", () => {
+    const shared = { title: "Shared title", description: "Shared description" };
+
+    expect(overrideDraftFor("youtube", shared, ["launch", "demo"])).toEqual({
+      title: "Shared title",
+      description: "Shared description",
+      hashtags: ["launch", "demo"],
     });
   });
 
@@ -266,6 +295,7 @@ describe("PlatformOverrideEditors", () => {
       platforms: ["youtube", "tiktok", "instagram"],
       title: "Shared title",
       description: "Shared description",
+      hashtags: ["launch"],
       overrides: {
         youtube: { title: "YouTube title", description: "YouTube description" },
       },
@@ -281,6 +311,20 @@ describe("PlatformOverrideEditors", () => {
     expect(html).toContain('value="YouTube title"');
     expect(html).toContain('name="overrides.youtube.description"');
     expect(html).toContain(">YouTube description</textarea>");
+    expect(html).toContain('name="overrides.youtube.hashtags"');
+  });
+
+  it("shows the shared hashtag set for a target with no override yet", () => {
+    const html = renderToStaticMarkup(createElement(PlatformOverrideEditors, {
+      platforms: ["youtube"],
+      title: "Shared title",
+      description: "Shared description",
+      hashtags: ["launch", "demo"],
+      overrides: {},
+      onChange: () => {},
+    }));
+
+    expect(html).toContain("#launch #demo");
   });
 });
 
@@ -363,6 +407,27 @@ describe("JobMetadataEditor", () => {
 
     expect(html).toContain("Future shared title\nFuture shared description");
     expect(html).not.toContain("Caption currently in flight");
+  });
+
+  it("seeds the hashtags input from a Job's own override, not the Upload's shared set", () => {
+    const html = renderToStaticMarkup(createElement(JobMetadataEditor, {
+      job: { ...baseJob, hashtagsOverride: ["tiktokonly"] },
+      sharedHashtags: ["launch", "demo"],
+      onSave: () => {},
+    }));
+
+    expect(html).toContain('name="job-job-1-hashtags"');
+    expect(html).toContain('value="tiktokonly"');
+  });
+
+  it("seeds the hashtags input from the Upload's shared set when the Job has no override", () => {
+    const html = renderToStaticMarkup(createElement(JobMetadataEditor, {
+      job: { ...baseJob, hashtagsOverride: null },
+      sharedHashtags: ["launch", "demo"],
+      onSave: () => {},
+    }));
+
+    expect(html).toContain('value="launch demo"');
   });
 });
 

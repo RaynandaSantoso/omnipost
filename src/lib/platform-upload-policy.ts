@@ -8,6 +8,7 @@ export interface AuthoredText {
 export interface PlatformTextOverride {
   title?: string;
   description?: string;
+  hashtags?: string[];
 }
 
 export type PlatformTextOverrides = Partial<Record<Platform, PlatformTextOverride>>;

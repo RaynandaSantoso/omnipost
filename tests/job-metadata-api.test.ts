@@ -25,7 +25,7 @@ describe("Job metadata API", () => {
     await prisma.upload.deleteMany();
   });
 
-  async function seedJob(platform = "youtube", status = "pending") {
+  async function seedJob(platform = "youtube", status = "pending", hashtags: string[] = []) {
     const { prisma, ensureSeedUser } = await import("@/lib/db");
     const user = await ensureSeedUser();
     const upload = await prisma.upload.create({
@@ -33,6 +33,7 @@ describe("Job metadata API", () => {
         userId: user.id,
         title: "Shared title",
         description: "Shared description",
+        hashtags: JSON.stringify(hashtags),
         fileName: "clip.mp4",
         filePath: "/tmp/clip.mp4",
         fileSize: 1024,
@@ -149,6 +150,63 @@ describe("Job metadata API", () => {
 
     expect(response.status).toBe(400);
     expect((await response.json()).error).toContain("100 characters or fewer");
+  });
+
+  it("sets a per-Job hashtag override without changing a sibling Job's shared hashtags", async () => {
+    const { PATCH, GET } = await import("@/app/api/jobs/[id]/metadata/route");
+    const { prisma } = await import("@/lib/db");
+    const job = await seedJob("youtube", "pending", ["launch", "demo"]);
+    const sibling = await prisma.job.create({
+      data: { uploadId: job.uploadId, platform: "instagram", status: "pending" },
+    });
+
+    const response = await PATCH(updateRequest(job.id, {
+      hashtags: ["tiktokonly"],
+    }), { params: Promise.resolve({ id: job.id }) });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      source: "overridden",
+      hashtagsOverride: ["tiktokonly"],
+      effective: { title: "Shared title", description: "Shared description\n\n#tiktokonly" },
+    });
+
+    const read = await GET(new Request(`http://localhost/api/jobs/${sibling.id}/metadata`), {
+      params: Promise.resolve({ id: sibling.id }),
+    });
+    expect(await read.json()).toMatchObject({
+      source: "shared",
+      hashtagsOverride: null,
+    });
+  });
+
+  it("clears a hashtag override back to the Upload's shared set", async () => {
+    const { PATCH } = await import("@/app/api/jobs/[id]/metadata/route");
+    const job = await seedJob("youtube", "pending", ["launch"]);
+
+    await PATCH(updateRequest(job.id, { hashtags: ["override"] }), {
+      params: Promise.resolve({ id: job.id }),
+    });
+    const cleared = await PATCH(updateRequest(job.id, { hashtags: null }), {
+      params: Promise.resolve({ id: job.id }),
+    });
+
+    expect(cleared.status).toBe(200);
+    expect(await cleared.json()).toMatchObject({
+      source: "shared",
+      hashtagsOverride: null,
+      effective: { title: "Shared title", description: "Shared description\n\n#launch" },
+    });
+  });
+
+  it("rejects a malformed hashtags override", async () => {
+    const { PATCH } = await import("@/app/api/jobs/[id]/metadata/route");
+    const job = await seedJob();
+
+    const response = await PATCH(updateRequest(job.id, { hashtags: "not-an-array" }), {
+      params: Promise.resolve({ id: job.id }),
+    });
+
+    expect(response.status).toBe(400);
   });
 
   it("marks an edit during upload as applying to a future attempt", async () => {

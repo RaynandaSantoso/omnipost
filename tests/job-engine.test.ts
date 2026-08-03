@@ -196,6 +196,51 @@ describe("job engine", () => {
     }
   });
 
+  it("composes one Job's overridden hashtags without changing a sibling Job's shared set", async () => {
+    const { createJobEngine } = await import("@/lib/job-engine");
+    const { ensureSeedUser } = await import("@/lib/db");
+    const user = await ensureSeedUser();
+    const { prisma } = await import("@/lib/db");
+    await prisma.upload.create({
+      data: {
+        userId: user.id,
+        title: "Shared title",
+        description: "Shared description",
+        hashtags: JSON.stringify(["launch", "demo"]),
+        fileName: "clip.mp4",
+        filePath: "/tmp/clip.mp4",
+        fileSize: 1024,
+        jobs: {
+          create: [
+            {
+              platform: "youtube",
+              status: "pending",
+              hashtagsOverride: JSON.stringify(["tiktokonly"]),
+            },
+            { platform: "tiktok", status: "pending" },
+          ],
+        },
+      },
+    });
+    const received = new Map<string, Pick<UploadMetadata, "title" | "description">>();
+    const engine = createJobEngine({
+      resolveAdapter: (platform) => adapterOf(async (metadata) => {
+        received.set(platform, {
+          title: metadata.title,
+          description: metadata.description,
+        });
+        return { url: `https://example.test/${platform}` };
+      }),
+    });
+
+    await engine.tick();
+
+    expect(Object.fromEntries(received)).toEqual({
+      youtube: { title: "Shared title", description: "Shared description\n\n#tiktokonly" },
+      tiktok: { title: "Shared title", description: "Shared description #launch #demo" },
+    });
+  });
+
   it("claims the latest saved metadata and freezes it until a later retry", async () => {
     const { createJobEngine } = await import("@/lib/job-engine");
     const { PATCH } = await import("@/app/api/jobs/[id]/metadata/route");

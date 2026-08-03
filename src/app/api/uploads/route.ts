@@ -10,6 +10,7 @@ import { jobMetadataState, sharedUploadText } from "@/lib/job-metadata";
 const textOverrideSchema = z.object({
   title: z.string().optional(),
   description: z.string().optional(),
+  hashtags: z.array(z.string()).optional(),
 }).strict();
 
 function hashtagsFrom(formData: FormData): string[] | NextResponse {

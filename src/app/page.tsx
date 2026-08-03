@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Platform } from "@/lib/platform";
 import {
+  formatHashtags,
   outboundTextFor,
   uploadPolicyFor,
   uploadPolicyViolation,
@@ -22,6 +23,7 @@ interface JobView {
   bytesUploaded?: number | null;
   titleOverride?: string | null;
   descriptionOverride?: string | null;
+  hashtagsOverride?: string[] | null;
   metadataSource?: "shared" | "overridden";
   overrideSource?: "shared" | "overridden";
   effectiveMetadata?: AuthoredText;
@@ -215,6 +217,7 @@ export function OutboundTextPreview({
           platform,
           titleOverride: override?.title ?? null,
           descriptionOverride: override?.description ?? null,
+          hashtagsOverride: override?.hashtags !== undefined ? JSON.stringify(override.hashtags) : null,
         }, { title, description, hashtags });
         return <div key={platform} className="rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800">
           <p className="font-medium text-black dark:text-zinc-50">
@@ -240,8 +243,9 @@ export function OutboundTextPreview({
 export function overrideDraftFor(
   platform: Platform,
   authored: AuthoredText,
+  hashtags: string[] = [],
 ): PlatformTextOverride {
-  const draft: PlatformTextOverride = {};
+  const draft: PlatformTextOverride = { hashtags };
   for (const field of outboundTextFor(platform, authored)) {
     if (field.key === "description") draft.description = field.value;
     else draft.title = field.value;
@@ -253,12 +257,14 @@ export function PlatformOverrideEditors({
   platforms,
   title,
   description,
+  hashtags,
   overrides,
   onChange,
 }: {
   platforms: Platform[];
   title: string;
   description: string;
+  hashtags: string[];
   overrides: PlatformTextOverrides;
   onChange: (platform: Platform, override: PlatformTextOverride | null) => void;
 }) {
@@ -280,25 +286,40 @@ export function PlatformOverrideEditors({
               </span>
             </summary>
             <div className="mt-3 flex flex-col gap-3">
-              {override ? fields.map((field) => {
-                const property = field.key === "description" ? "description" : "title";
-                const value = override[property] ?? "";
-                const editorProps = {
-                  name: `overrides.${platform}.${property}`,
-                  value,
-                  onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
-                    onChange(platform, { ...override, [property]: event.target.value }),
-                  className: "rounded-md border border-zinc-300 bg-white px-3 py-2 text-black outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50",
-                };
-                return (
-                  <label key={field.key} className="flex flex-col gap-1">
-                    <span className="text-xs text-zinc-500 dark:text-zinc-400">{field.label}</span>
-                    {field.key === "title"
-                      ? <input type="text" {...editorProps} />
-                      : <textarea rows={3} {...editorProps} />}
+              {override ? (
+                <>
+                  {fields.map((field) => {
+                    const property = field.key === "description" ? "description" : "title";
+                    const value = override[property] ?? "";
+                    const editorProps = {
+                      name: `overrides.${platform}.${property}`,
+                      value,
+                      onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+                        onChange(platform, { ...override, [property]: event.target.value }),
+                      className: "rounded-md border border-zinc-300 bg-white px-3 py-2 text-black outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50",
+                    };
+                    return (
+                      <label key={field.key} className="flex flex-col gap-1">
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400">{field.label}</span>
+                        {field.key === "title"
+                          ? <input type="text" {...editorProps} />
+                          : <textarea rows={3} {...editorProps} />}
+                      </label>
+                    );
+                  })}
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs text-zinc-500 dark:text-zinc-400">Hashtags</span>
+                    <input
+                      type="text"
+                      name={`overrides.${platform}.hashtags`}
+                      value={(override.hashtags ?? []).join(" ")}
+                      onChange={(event) =>
+                        onChange(platform, { ...override, hashtags: parseHashtagInput(event.target.value) })}
+                      className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-black outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+                    />
                   </label>
-                );
-              }) : (
+                </>
+              ) : (
                 <>
                   {fields.map((field) => (
                     <div key={field.key}>
@@ -306,9 +327,15 @@ export function PlatformOverrideEditors({
                       <output className="mt-1 block whitespace-pre-wrap text-black dark:text-zinc-50">{field.value}</output>
                     </div>
                   ))}
+                  <div>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400">Hashtags</p>
+                    <output className="mt-1 block whitespace-pre-wrap text-black dark:text-zinc-50">
+                      {formatHashtags(hashtags) || "—"}
+                    </output>
+                  </div>
                   <button
                     type="button"
-                    onClick={() => onChange(platform, overrideDraftFor(platform, authored))}
+                    onClick={() => onChange(platform, overrideDraftFor(platform, authored, hashtags))}
                     className="w-fit rounded border border-zinc-300 px-2 py-1 text-black dark:border-zinc-700 dark:text-zinc-50"
                   >
                     Customize
@@ -346,10 +373,12 @@ function MetadataSourceBadge({
 
 export function JobMetadataEditor({
   job,
+  sharedHashtags = [],
   onSave,
 }: {
   job: JobView;
-  onSave: (title: string | null, description: string | null) => void | Promise<void>;
+  sharedHashtags?: string[];
+  onSave: (title: string | null, description: string | null, hashtags: string[] | null) => void | Promise<void>;
 }) {
   const shape = uploadPolicyFor(job.platform).text;
   const overrideSource = job.overrideSource ?? job.metadataSource;
@@ -363,12 +392,15 @@ export function JobMetadataEditor({
   const [draftDescription, setDraftDescription] = useState(
     job.descriptionOverride ?? effectiveMetadata.description,
   );
+  const [draftHashtags, setDraftHashtags] = useState(
+    (job.hashtagsOverride ?? sharedHashtags).join(" "),
+  );
   const [saving, setSaving] = useState(false);
 
-  async function save(title: string | null, description: string | null) {
+  async function save(title: string | null, description: string | null, hashtags: string[] | null) {
     setSaving(true);
     try {
-      await onSave(title, description);
+      await onSave(title, description, hashtags);
     } finally {
       setSaving(false);
     }
@@ -384,7 +416,11 @@ export function JobMetadataEditor({
         className="mt-3 flex flex-col gap-3"
         onSubmit={(event) => {
           event.preventDefault();
-          void save(draftTitle, shape.kind === "caption" ? null : draftDescription);
+          void save(
+            draftTitle,
+            shape.kind === "caption" ? null : draftDescription,
+            parseHashtagInput(draftHashtags),
+          );
         }}
       >
         <label className="flex flex-col gap-1">
@@ -424,6 +460,16 @@ export function JobMetadataEditor({
             />
           </label>
         )}
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-zinc-500 dark:text-zinc-400">Hashtags</span>
+          <input
+            name={`job-${job.id}-hashtags`}
+            type="text"
+            value={draftHashtags}
+            onChange={(event) => setDraftHashtags(event.target.value)}
+            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+          />
+        </label>
         {job.status === "uploading" && (
           <p className="text-xs text-amber-700 dark:text-amber-300">
             Saved changes apply to a future attempt, not the post currently in flight.
@@ -437,7 +483,7 @@ export function JobMetadataEditor({
             <button
               type="button"
               disabled={saving}
-              onClick={() => void save(null, null)}
+              onClick={() => void save(null, null, null)}
               className="rounded border border-zinc-300 px-2 py-1 text-black disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50"
             >
               Clear override
@@ -473,15 +519,17 @@ export function JobMetadataAudit({ job }: { job: JobView }) {
 export function JobStatusDetails({
   job,
   fileSize,
+  sharedHashtags,
   history = false,
   onRetry,
   onSaveMetadata,
 }: {
   job: JobView;
   fileSize?: number;
+  sharedHashtags?: string[];
   history?: boolean;
   onRetry: () => void;
-  onSaveMetadata: (title: string | null, description: string | null) => void | Promise<void>;
+  onSaveMetadata: (title: string | null, description: string | null, hashtags: string[] | null) => void | Promise<void>;
 }) {
   const percent = transferPercent(job, fileSize);
   return (
@@ -504,8 +552,9 @@ export function JobStatusDetails({
       <JobOutcome job={job} onRetry={onRetry} history={history} />
       <JobMetadataAudit job={job} />
       <JobMetadataEditor
-        key={`${job.id}:${job.titleOverride}:${job.descriptionOverride}`}
+        key={`${job.id}:${job.titleOverride}:${job.descriptionOverride}:${job.hashtagsOverride}`}
         job={job}
+        sharedHashtags={sharedHashtags}
         onSave={onSaveMetadata}
       />
     </div>
@@ -743,17 +792,19 @@ export default function Home() {
     jobId: string,
     titleOverride: string | null,
     descriptionOverride: string | null,
+    hashtagsOverride: string[] | null,
   ) {
     const response = await fetch(`/api/jobs/${jobId}/metadata`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ title: titleOverride, description: descriptionOverride }),
+      body: JSON.stringify({ title: titleOverride, description: descriptionOverride, hashtags: hashtagsOverride }),
     });
     if (!response.ok) return;
     const metadata: Pick<JobView,
       | "id"
       | "titleOverride"
       | "descriptionOverride"
+      | "hashtagsOverride"
       | "metadataSource"
       | "overrideSource"
       | "effectiveMetadata"
@@ -944,6 +995,7 @@ export default function Home() {
             platforms={uploadTargetPlatforms(youtube, tiktok, instagram)}
             title={title}
             description={description}
+            hashtags={parseHashtagInput(hashtagInput)}
             overrides={overrides}
             onChange={(platform, override) => {
               setOverrides((current) => {
@@ -988,8 +1040,9 @@ export default function Home() {
                 key={job.id}
                 job={job}
                 fileSize={upload.fileSize}
+                sharedHashtags={upload.hashtags}
                 onRetry={() => retryJob(job.id)}
-                onSaveMetadata={(title, description) => saveJobMetadata(job.id, title, description)}
+                onSaveMetadata={(title, description, hashtags) => saveJobMetadata(job.id, title, description, hashtags)}
               />
             ))}
           </div>
@@ -1006,9 +1059,10 @@ export default function Home() {
                 <JobStatusDetails
                   key={job.id}
                   job={job}
+                  sharedHashtags={item.hashtags}
                   history
                   onRetry={() => retryJob(job.id, item)}
-                  onSaveMetadata={(title, description) => saveJobMetadata(job.id, title, description)}
+                  onSaveMetadata={(title, description, hashtags) => saveJobMetadata(job.id, title, description, hashtags)}
                 />
               ))}
             </div>

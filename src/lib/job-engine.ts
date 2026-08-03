@@ -122,7 +122,9 @@ export function createJobEngine(options: JobEngineOptions = {}): JobEngine {
       if (!current) return null;
       const metadata = resolveJobMetadata(current, sharedUploadText(current.upload));
       const resolvedFromOverride =
-        current.titleOverride !== null || current.descriptionOverride !== null;
+        current.titleOverride !== null
+        || current.descriptionOverride !== null
+        || current.hashtagsOverride !== null;
       const claimed = await transaction.job.updateMany({
         where: { id: jobId, ...runnableWhere(now) },
         data: {

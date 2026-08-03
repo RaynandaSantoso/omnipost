@@ -6,6 +6,9 @@ export interface JobMetadataOverrides {
   platform: string;
   titleOverride: string | null;
   descriptionOverride: string | null;
+  // JSON-encoded string array, same encoding as Upload.hashtags. Null (or
+  // absent) means inherit the Upload's shared hashtag set.
+  hashtagsOverride?: string | null;
 }
 
 export interface SharedUploadText {
@@ -14,24 +17,38 @@ export interface SharedUploadText {
   hashtags?: string[];
 }
 
-// Upload.hashtags is stored as a JSON-encoded string column (see
-// prisma/schema.prisma); this turns a raw Upload row into the shape
-// resolveJobMetadata/jobMetadataState expect. An unparseable value falls
-// back to no hashtags rather than throwing, since it should never happen
-// past the write-side validation but shouldn't break a status read either.
-export function sharedUploadText(
-  upload: { title: string; description: string; hashtags: string },
-): SharedUploadText {
-  let hashtags: string[] = [];
+// Both Upload.hashtags and Job.hashtagsOverride store the same JSON-encoded
+// string-array shape. An unparseable value falls back to an empty array
+// rather than throwing, since it should never happen past the write-side
+// validation but shouldn't break a status read either.
+function parseHashtagArray(raw: string): string[] {
   try {
-    const parsed: unknown = JSON.parse(upload.hashtags);
+    const parsed: unknown = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.every((tag) => typeof tag === "string")) {
-      hashtags = parsed;
+      return parsed;
     }
   } catch {
     // fall through to no hashtags
   }
-  return { title: upload.title, description: upload.description, hashtags };
+  return [];
+}
+
+// Turns a raw Upload row into the shape resolveJobMetadata/jobMetadataState
+// expect.
+export function sharedUploadText(
+  upload: { title: string; description: string; hashtags: string },
+): SharedUploadText {
+  return {
+    title: upload.title,
+    description: upload.description,
+    hashtags: parseHashtagArray(upload.hashtags),
+  };
+}
+
+// null means the Job inherits the Upload's shared hashtag set; a non-null
+// value (including "[]") replaces it entirely for this Job only.
+export function jobHashtagsOverride(raw: string | null | undefined): string[] | null {
+  return raw == null ? null : parseHashtagArray(raw);
 }
 
 export function jobMetadataState(
@@ -44,7 +61,9 @@ export function jobMetadataState(
   upload: SharedUploadText,
 ) {
   const status = jobStatusFrom(job.status);
-  const overrideSource = job.titleOverride === null && job.descriptionOverride === null
+  const overrideSource = job.titleOverride === null
+    && job.descriptionOverride === null
+    && job.hashtagsOverride == null
     ? "shared" as const
     : "overridden" as const;
   const hasActiveAttemptSnapshot =
@@ -56,6 +75,7 @@ export function jobMetadataState(
   return {
     titleOverride: job.titleOverride,
     descriptionOverride: job.descriptionOverride,
+    hashtagsOverride: jobHashtagsOverride(job.hashtagsOverride),
     overrideSource,
     savedMetadata,
     metadataSource: hasActiveAttemptSnapshot
@@ -88,6 +108,7 @@ export function resolveJobMetadata(
     title: job.titleOverride ?? upload.title,
     description: job.descriptionOverride ?? upload.description,
   };
-  if (!platform.success || !upload.hashtags?.length) return resolved;
-  return applyHashtags(platform.data, resolved, upload.hashtags);
+  const hashtags = jobHashtagsOverride(job.hashtagsOverride) ?? upload.hashtags ?? [];
+  if (!platform.success || !hashtags.length) return resolved;
+  return applyHashtags(platform.data, resolved, hashtags);
 }

@@ -73,6 +73,9 @@ export async function createUpload(params: {
           status: "pending",
           titleOverride: overrides[platform]?.title ?? null,
           descriptionOverride: overrides[platform]?.description ?? null,
+          hashtagsOverride: overrides[platform]?.hashtags !== undefined
+            ? JSON.stringify(overrides[platform].hashtags)
+            : null,
         })),
       },
     },

@@ -191,6 +191,31 @@ describe("POST /api/uploads", () => {
     expect(JSON.parse(upload.hashtags)).toEqual(["launch", "demo"]);
   });
 
+  it("persists a per-platform hashtag override on its target Job without changing the shared Upload hashtags", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const { prisma } = await import("@/lib/db");
+
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "Shared title",
+      description: "Shared description",
+      platform: "youtube",
+      hashtags: ["launch", "demo"],
+      overrides: {
+        youtube: { hashtags: ["tiktokonly"] },
+      },
+    }));
+
+    expect(response.status).toBe(201);
+    const created = await response.json();
+    const upload = await prisma.upload.findUniqueOrThrow({
+      where: { id: created.id },
+      include: { jobs: true },
+    });
+    expect(JSON.parse(upload.hashtags)).toEqual(["launch", "demo"]);
+    expect(JSON.parse(upload.jobs[0].hashtagsOverride!)).toEqual(["tiktokonly"]);
+  });
+
   it("rejects a malformed hashtags field", async () => {
     const { POST } = await import("@/app/api/uploads/route");
     const response = await POST(uploadRequest({

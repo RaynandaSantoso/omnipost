@@ -9,9 +9,10 @@ import { platformTextOverrideViolation } from "@/lib/platform-upload-policy";
 const metadataUpdateSchema = z.object({
   title: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
+  hashtags: z.array(z.string()).nullable().optional(),
 }).strict().refine(
-  (value) => value.title !== undefined || value.description !== undefined,
-  { message: "provide a title or description override" },
+  (value) => value.title !== undefined || value.description !== undefined || value.hashtags !== undefined,
+  { message: "provide a title, description, or hashtags override" },
 );
 
 type JobWithUpload = NonNullable<Awaited<ReturnType<typeof findJob>>>;
@@ -71,6 +72,9 @@ export async function PATCH(
     const description = parsed.data.description === undefined
       ? current.descriptionOverride
       : parsed.data.description;
+    const hashtags = parsed.data.hashtags === undefined
+      ? current.hashtagsOverride
+      : parsed.data.hashtags === null ? null : JSON.stringify(parsed.data.hashtags);
     const platform = platformSchema.safeParse(current.platform);
     if (!platform.success) {
       return NextResponse.json({ error: "this Job has an unsupported platform" }, { status: 400 });
@@ -82,7 +86,7 @@ export async function PATCH(
 
     const updated = await prisma.job.update({
       where: { id },
-      data: { titleOverride: title, descriptionOverride: description },
+      data: { titleOverride: title, descriptionOverride: description, hashtagsOverride: hashtags },
       include: { upload: true },
     });
     return NextResponse.json(metadataView(updated));
