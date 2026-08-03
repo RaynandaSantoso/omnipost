@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { Platform } from "@/lib/platform";
+import { PLATFORM_LABEL, type Platform } from "@/lib/platform";
 import {
   formatHashtags,
   outboundTextFor,
@@ -12,6 +12,16 @@ import {
   type PlatformTextOverrides,
 } from "@/lib/platform-upload-policy";
 import { resolveJobMetadata } from "@/lib/job-metadata";
+import {
+  connectionRoute,
+  connectionStatusText,
+  connectRoute,
+  CONNECTABLE_PLATFORMS,
+  CONNECTION_PRESENTATION,
+  disconnected,
+  type ConnectablePlatform,
+  type ConnectionStatus,
+} from "@/lib/connection-status";
 
 interface JobView {
   id: string;
@@ -42,15 +52,12 @@ interface UploadView {
   jobs: JobView[];
 }
 
-interface YouTubeConnectionView {
-  connected: boolean;
-  externalAccountId: string | null;
-  externalAccountLabel: string | null;
-  reconnectNeeded: boolean;
-}
+/** Each connectable platform's latest status, or null while it is still loading. */
+type ConnectionsView = Record<ConnectablePlatform, ConnectionStatus | null>;
 
-type TikTokConnectionView = YouTubeConnectionView;
-type InstagramConnectionView = YouTubeConnectionView;
+const NO_CONNECTIONS: ConnectionsView = Object.fromEntries(
+  CONNECTABLE_PLATFORMS.map((platform) => [platform, null]),
+) as ConnectionsView;
 
 const STATUS_LABEL: Record<JobView["status"], string> = {
   pending: "Pending",
@@ -63,23 +70,23 @@ const MAX_FILE_SIZE_BYTES = 256 * 1024 * 1024;
 const MAX_DURATION_SECONDS = 180;
 const SUPPORTED_VIDEO_TYPES = new Set(["video/mp4", "video/webm", "video/quicktime"]);
 
+// How a Job's outcome reads once it settles. The platform's own name is not
+// repeated here — that lives in PLATFORM_LABEL, so the connect block and the
+// job status can't disagree about what a platform is called.
 interface PlatformPresentation {
-  name: string;
   linkResult: boolean;
   uploadingMessage?: string;
   successMessage?: (job: JobView) => string | null;
 }
 
 const PLATFORM_PRESENTATION: Record<Platform, PlatformPresentation> = {
-  "dry-run": { name: "The platform", linkResult: true },
-  youtube: { name: "YouTube", linkResult: true },
+  "dry-run": { linkResult: true },
+  youtube: { linkResult: true },
   tiktok: {
-    name: "TikTok",
     linkResult: false,
     successMessage: () => "Posted privately to your TikTok account (SELF_ONLY).",
   },
   instagram: {
-    name: "Instagram",
     linkResult: false,
     uploadingMessage: "Instagram is fetching and processing your Reel.",
     successMessage: (job) => {
@@ -100,38 +107,70 @@ function typeFor(file: File): string {
   return extension === "mov" ? "video/quicktime" : `video/${extension ?? "unknown"}`;
 }
 
-function uploadTargetPlatforms(
-  youtube: YouTubeConnectionView | null,
-  tiktok: TikTokConnectionView | null,
-  instagram: InstagramConnectionView | null,
-): Platform[] {
-  const connected: Platform[] = [
-    ...(youtube?.connected ? ["youtube" as const] : []),
-    ...(tiktok?.connected ? ["tiktok" as const] : []),
-    ...(instagram?.connected ? ["instagram" as const] : []),
-  ];
-  return connected.length > 0 ? connected : ["dry-run"];
+export function uploadTargetPlatforms(connections: ConnectionsView): Platform[] {
+  const connected = CONNECTABLE_PLATFORMS.filter(
+    (platform) => connections[platform]?.connected,
+  );
+  return connected.length > 0 ? [...connected] : ["dry-run"];
 }
 
-export function youtubeConnectionStatusText(youtube: YouTubeConnectionView | null): string {
-  if (!youtube?.connected) return "Not connected";
-  if (youtube.reconnectNeeded) return "Reconnect needed";
-  return `Connected to ${youtube.externalAccountLabel ?? youtube.externalAccountId}`;
+// Per-platform entry points into the shared status text. They exist so each
+// platform's wording stays pinned by its own test, catching a regression in
+// the shared implementation at the platform that would suffer it.
+export function youtubeConnectionStatusText(status: ConnectionStatus | null): string {
+  return connectionStatusText("youtube", status);
 }
 
-export function tiktokConnectionStatusText(tiktok: TikTokConnectionView | null): string {
-  if (!tiktok?.connected) return "Not connected";
-  if (tiktok.reconnectNeeded) return "Reconnect needed";
-  return `Connected to ${tiktok.externalAccountLabel ?? tiktok.externalAccountId}`;
+export function tiktokConnectionStatusText(status: ConnectionStatus | null): string {
+  return connectionStatusText("tiktok", status);
 }
 
-export function instagramConnectionStatusText(instagram: InstagramConnectionView | null): string {
-  if (!instagram?.connected) return "Not connected";
-  if (instagram.reconnectNeeded) return "Reconnect needed";
-  const account = instagram.externalAccountLabel
-    ? `@${instagram.externalAccountLabel.replace(/^@/, "")}`
-    : instagram.externalAccountId;
-  return `Connected to ${account}`;
+export function instagramConnectionStatusText(status: ConnectionStatus | null): string {
+  return connectionStatusText("instagram", status);
+}
+
+export function PlatformConnectionSection({
+  platform,
+  connection,
+  onDisconnect,
+}: {
+  platform: ConnectablePlatform;
+  connection: ConnectionStatus | null;
+  onDisconnect: (platform: ConnectablePlatform) => void | Promise<void>;
+}) {
+  const label = PLATFORM_LABEL[platform];
+  const { disclaimer } = CONNECTION_PRESENTATION[platform];
+  return (
+    <section className="flex w-full flex-col gap-2 rounded-md border border-zinc-200 px-4 py-3 text-sm dark:border-zinc-800">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="font-medium text-black dark:text-zinc-50">{label}</p>
+          <p className="text-zinc-600 dark:text-zinc-400">
+            {connectionStatusText(platform, connection)}
+          </p>
+        </div>
+        {connection?.connected ? (
+          <button
+            type="button"
+            onClick={() => onDisconnect(platform)}
+            className="rounded-md border border-zinc-300 px-3 py-2 text-black dark:border-zinc-700 dark:text-zinc-50"
+          >
+            Disconnect
+          </button>
+        ) : (
+          <a
+            href={connectRoute(platform)}
+            className="rounded-md bg-black px-3 py-2 text-white dark:bg-zinc-50 dark:text-black"
+          >
+            Connect {label}
+          </a>
+        )}
+      </div>
+      {disclaimer ? (
+        <p className="text-xs text-zinc-500 dark:text-zinc-500">{disclaimer}</p>
+      ) : null}
+    </section>
+  );
 }
 
 // The share of the video the platform itself has taken, which is a
@@ -144,7 +183,7 @@ export function transferPercent(job: JobView, fileSize?: number): number | null 
 }
 
 function readableFailure(job: JobView): string {
-  const name = PLATFORM_PRESENTATION[job.platform].name;
+  const name = PLATFORM_LABEL[job.platform];
   if (!job.error) return "";
   if (job.error.toLowerCase().includes("reconnect")) return `${name} needs to be reconnected before this upload can continue.`;
   if (job.error.toLowerCase().includes("credential")) return `${name} rejected the connected account credentials.`;
@@ -221,7 +260,7 @@ export function OutboundTextPreview({
         }, { title, description, hashtags });
         return <div key={platform} className="rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800">
           <p className="font-medium text-black dark:text-zinc-50">
-            {PLATFORM_PRESENTATION[platform].name}
+            {PLATFORM_LABEL[platform]}
           </p>
           {outboundTextFor(platform, resolved).map((field) => (
             <div key={field.key} className="mt-2">
@@ -280,7 +319,7 @@ export function PlatformOverrideEditors({
         return (
           <details key={platform} className="rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800">
             <summary className="flex cursor-pointer justify-between gap-2 font-medium text-black dark:text-zinc-50">
-              <span>{PLATFORM_PRESENTATION[platform].name}</span>
+              <span>{PLATFORM_LABEL[platform]}</span>
               <span className={override ? "text-blue-600 dark:text-blue-400" : "text-zinc-500 dark:text-zinc-400"}>
                 {override ? "Overridden" : "Shared"}
               </span>
@@ -575,9 +614,7 @@ export default function Home() {
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [upload, setUpload] = useState<UploadView | null>(null);
   const [history, setHistory] = useState<UploadView[]>([]);
-  const [youtube, setYoutube] = useState<YouTubeConnectionView | null>(null);
-  const [tiktok, setTiktok] = useState<TikTokConnectionView | null>(null);
-  const [instagram, setInstagram] = useState<InstagramConnectionView | null>(null);
+  const [connections, setConnections] = useState<ConnectionsView>(NO_CONNECTIONS);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // React state (`submitting`) drives the disabled attribute, but a state
   // update isn't applied to the DOM synchronously — a fast double-click can
@@ -601,44 +638,22 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/platforms/youtube")
-      .then(async (response) => (response.ok ? response.json() : null))
-      .then((data: YouTubeConnectionView | null) => setYoutube(data))
-      .catch(() => setYoutube(null));
-  }, []);
-
-  useEffect(() => {
-    fetch("/api/platforms/tiktok")
-      .then(async (response) => (response.ok ? response.json() : null))
-      .then((data: TikTokConnectionView | null) => setTiktok(data))
-      .catch(() => setTiktok(null));
-  }, []);
-
-  useEffect(() => {
-    fetch("/api/platforms/instagram")
-      .then(async (response) => (response.ok ? response.json() : null))
-      .then((data: InstagramConnectionView | null) => setInstagram(data))
-      .catch(() => setInstagram(null));
-  }, []);
-
-  async function disconnectYouTube() {
-    const response = await fetch("/api/platforms/youtube", { method: "DELETE" });
-    if (response.ok) {
-      setYoutube({ connected: false, externalAccountId: null, externalAccountLabel: null, reconnectNeeded: false });
+    // One request per platform, each landing on its own key so a slow or
+    // failing platform never holds up the others.
+    for (const platform of CONNECTABLE_PLATFORMS) {
+      fetch(connectionRoute(platform))
+        .then(async (response) => (response.ok ? response.json() : null))
+        .catch(() => null)
+        .then((data: ConnectionStatus | null) => {
+          setConnections((current) => ({ ...current, [platform]: data }));
+        });
     }
-  }
+  }, []);
 
-  async function disconnectTikTok() {
-    const response = await fetch("/api/platforms/tiktok", { method: "DELETE" });
+  async function disconnect(platform: ConnectablePlatform) {
+    const response = await fetch(connectionRoute(platform), { method: "DELETE" });
     if (response.ok) {
-      setTiktok({ connected: false, externalAccountId: null, externalAccountLabel: null, reconnectNeeded: false });
-    }
-  }
-
-  async function disconnectInstagram() {
-    const response = await fetch("/api/platforms/instagram", { method: "DELETE" });
-    if (response.ok) {
-      setInstagram({ connected: false, externalAccountId: null, externalAccountLabel: null, reconnectNeeded: false });
+      setConnections((current) => ({ ...current, [platform]: disconnected() }));
     }
   }
 
@@ -674,7 +689,7 @@ export default function Home() {
     }
     const platformIssue = uploadPolicyViolation(
       candidate,
-      uploadTargetPlatforms(youtube, tiktok, instagram),
+      uploadTargetPlatforms(connections),
     );
     if (platformIssue) {
       setFileIssue(`${platformIssue}.`);
@@ -736,7 +751,7 @@ export default function Home() {
     }
     const platformIssue = uploadPolicyViolation(
       file,
-      uploadTargetPlatforms(youtube, tiktok, instagram),
+      uploadTargetPlatforms(connections),
     );
     if (platformIssue) {
       setFileIssue(`${platformIssue}.`);
@@ -831,91 +846,14 @@ export default function Home() {
           </p>
         </div>
 
-        <section className="flex w-full items-center justify-between rounded-md border border-zinc-200 px-4 py-3 text-sm dark:border-zinc-800">
-          <div>
-            <p className="font-medium text-black dark:text-zinc-50">YouTube</p>
-            <p className="text-zinc-600 dark:text-zinc-400">
-              {youtubeConnectionStatusText(youtube)}
-            </p>
-          </div>
-          {youtube?.connected ? (
-            <button
-              type="button"
-              onClick={disconnectYouTube}
-              className="rounded-md border border-zinc-300 px-3 py-2 text-black dark:border-zinc-700 dark:text-zinc-50"
-            >
-              Disconnect
-            </button>
-          ) : (
-            <a
-              href="/api/platforms/youtube/connect"
-              className="rounded-md bg-black px-3 py-2 text-white dark:bg-zinc-50 dark:text-black"
-            >
-              Connect YouTube
-            </a>
-          )}
-        </section>
-
-        <section className="flex w-full flex-col gap-2 rounded-md border border-zinc-200 px-4 py-3 text-sm dark:border-zinc-800">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="font-medium text-black dark:text-zinc-50">TikTok</p>
-              <p className="text-zinc-600 dark:text-zinc-400">
-                {tiktokConnectionStatusText(tiktok)}
-              </p>
-            </div>
-            {tiktok?.connected ? (
-              <button
-                type="button"
-                onClick={disconnectTikTok}
-                className="rounded-md border border-zinc-300 px-3 py-2 text-black dark:border-zinc-700 dark:text-zinc-50"
-              >
-                Disconnect
-              </button>
-            ) : (
-              <a
-                href="/api/platforms/tiktok/connect"
-                className="rounded-md bg-black px-3 py-2 text-white dark:bg-zinc-50 dark:text-black"
-              >
-                Connect TikTok
-              </a>
-            )}
-          </div>
-          <p className="text-xs text-zinc-500 dark:text-zinc-500">
-            Posts are private (SELF_ONLY) until TikTok approves this app for
-            public posting.
-          </p>
-        </section>
-
-        <section className="flex w-full flex-col gap-2 rounded-md border border-zinc-200 px-4 py-3 text-sm dark:border-zinc-800">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="font-medium text-black dark:text-zinc-50">Instagram</p>
-              <p className="text-zinc-600 dark:text-zinc-400">
-                {instagramConnectionStatusText(instagram)}
-              </p>
-            </div>
-            {instagram?.connected ? (
-              <button
-                type="button"
-                onClick={disconnectInstagram}
-                className="rounded-md border border-zinc-300 px-3 py-2 text-black dark:border-zinc-700 dark:text-zinc-50"
-              >
-                Disconnect
-              </button>
-            ) : (
-              <a
-                href="/api/platforms/instagram/connect"
-                className="rounded-md bg-black px-3 py-2 text-white dark:bg-zinc-50 dark:text-black"
-              >
-                Connect Instagram
-              </a>
-            )}
-          </div>
-          <p className="text-xs text-zinc-500 dark:text-zinc-500">
-            Requires an Instagram Business or Creator account linked to a Facebook Page.
-          </p>
-        </section>
+        {CONNECTABLE_PLATFORMS.map((platform) => (
+          <PlatformConnectionSection
+            key={platform}
+            platform={platform}
+            connection={connections[platform]}
+            onDisconnect={disconnect}
+          />
+        ))}
 
         <form onSubmit={handleSubmit} className="flex w-full flex-col gap-4">
           <label
@@ -984,7 +922,7 @@ export default function Home() {
           />
 
           <OutboundTextPreview
-            platforms={uploadTargetPlatforms(youtube, tiktok, instagram)}
+            platforms={uploadTargetPlatforms(connections)}
             title={title}
             description={description}
             hashtags={parseHashtagInput(hashtagInput)}
@@ -992,7 +930,7 @@ export default function Home() {
           />
 
           <PlatformOverrideEditors
-            platforms={uploadTargetPlatforms(youtube, tiktok, instagram)}
+            platforms={uploadTargetPlatforms(connections)}
             title={title}
             description={description}
             hashtags={parseHashtagInput(hashtagInput)}

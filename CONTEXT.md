@@ -24,6 +24,14 @@ Single-context repo. See `docs/adr/` for the decisions behind these terms.
   fields for the connected account (`externalAccountId` — the platform's
   own opaque id — and `externalAccountLabel`, a human-readable handle
   shown in the UI instead of the raw id).
+- **Connectable platform** — a Platform a PlatformConnection can exist for.
+  Every Platform except `dry-run`, which publishes nowhere and so has no
+  account to link. The dashboard renders one connect/status block per
+  connectable platform.
+- **Connection status** — the dashboard's read-only view of a
+  PlatformConnection: connected or not, whether it needs reconnecting, and
+  the identifying fields. Deliberately carries no tokens; it is what
+  `GET /api/platforms/<platform>` returns.
 - **Upload** — one user-initiated publish action: the source video file,
   plus the shared title/description defaults for every platform it fans out
   to. A Job may override either value without changing these defaults.

@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
-import { instagramConnectionStatusText, JobMetadataEditor, JobOutcome, JobStatusDetails, OutboundTextPreview, overrideDraftFor, parseHashtagInput, PlatformOverrideEditors, tiktokConnectionStatusText, transferPercent, youtubeConnectionStatusText } from "@/app/page";
+import { instagramConnectionStatusText, JobMetadataEditor, JobOutcome, JobStatusDetails, OutboundTextPreview, overrideDraftFor, parseHashtagInput, PlatformConnectionSection, PlatformOverrideEditors, tiktokConnectionStatusText, transferPercent, uploadTargetPlatforms, youtubeConnectionStatusText } from "@/app/page";
+import type { ConnectablePlatform, ConnectionStatus } from "@/lib/connection-status";
 
 describe("youtubeConnectionStatusText", () => {
   it("renders the label when connected and labeled", () => {
@@ -115,6 +116,71 @@ describe("instagramConnectionStatusText", () => {
 
   it("reports not connected without a connection", () => {
     expect(instagramConnectionStatusText(null)).toBe("Not connected");
+  });
+});
+
+describe("uploadTargetPlatforms", () => {
+  const link = (connected: boolean): ConnectionStatus => ({
+    connected,
+    externalAccountId: "acct-1",
+    externalAccountLabel: null,
+    reconnectNeeded: false,
+  });
+
+  it("targets every connected platform, in dashboard order", () => {
+    expect(uploadTargetPlatforms({
+      youtube: link(true),
+      tiktok: link(false),
+      instagram: link(true),
+    })).toEqual(["youtube", "instagram"]);
+  });
+
+  it("falls back to a dry run when nothing is connected", () => {
+    expect(uploadTargetPlatforms({ youtube: null, tiktok: link(false), instagram: null }))
+      .toEqual(["dry-run"]);
+  });
+});
+
+describe("PlatformConnectionSection", () => {
+  const render = (platform: ConnectablePlatform, connection: ConnectionStatus | null) =>
+    renderToStaticMarkup(createElement(PlatformConnectionSection, {
+      platform,
+      connection,
+      onDisconnect: () => {},
+    }));
+
+  it("offers each platform's own connect link when it is not connected", () => {
+    for (const [platform, label] of [
+      ["youtube", "YouTube"],
+      ["tiktok", "TikTok"],
+      ["instagram", "Instagram"],
+    ] as const) {
+      const html = render(platform, null);
+      expect(html).toContain(`href="/api/platforms/${platform}/connect"`);
+      expect(html).toContain(`Connect ${label}`);
+      expect(html).toContain("Not connected");
+      expect(html).not.toContain("Disconnect");
+    }
+  });
+
+  it("swaps the connect link for a disconnect button once connected", () => {
+    const html = render("youtube", {
+      connected: true,
+      externalAccountId: "chan-1",
+      externalAccountLabel: "My Channel",
+      reconnectNeeded: false,
+    });
+    expect(html).toContain("Connected to My Channel");
+    expect(html).toContain("Disconnect");
+    expect(html).not.toContain("/api/platforms/youtube/connect");
+  });
+
+  it("keeps each platform's disclaimer with that platform", () => {
+    expect(render("tiktok", null)).toContain("Posts are private (SELF_ONLY)");
+    expect(render("instagram", null)).toContain("Instagram Business or Creator account");
+    const youtube = render("youtube", null);
+    expect(youtube).not.toContain("SELF_ONLY");
+    expect(youtube).not.toContain("Business or Creator");
   });
 });
 
