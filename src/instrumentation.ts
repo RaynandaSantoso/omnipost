@@ -9,6 +9,10 @@ export async function register() {
     const { getConfig } = await import("@/lib/config");
     getConfig();
 
+    const { localOnlyNotice } = await import("@/lib/boot");
+    const notice = localOnlyNotice();
+    if (notice) console.warn(notice);
+
     const { runMigrations } = await import("@/lib/migrate");
     runMigrations();
 
@@ -43,10 +47,9 @@ export async function register() {
     await recoverStalledJobs();
     startJobRunner();
   } catch (error) {
-    // Next.js logs a thrown instrumentation error but does not itself exit
-    // the process — left alone, the server keeps accepting requests in a
-    // half-booted state. Force the exit so an orchestrator sees the failure.
-    console.error(error instanceof Error ? error.message : error);
-    process.exit(1);
+    // Imported here rather than at the top so the Node-only exit it performs
+    // never reaches the Edge bundle Next also builds this file into.
+    const { reportBootFailure } = await import("@/lib/boot");
+    reportBootFailure(error);
   }
 }

@@ -137,3 +137,59 @@ setInterval(() => {}, 1000);
     expect(output).toMatch(/computer.*running.*jobs/i);
   });
 });
+
+describe("npm run dev:app launcher", () => {
+  afterEach(() => {
+    for (const directory of temporaryDirectories.splice(0)) {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("starts only the app, marked local-only, on a .env left over from a tunnel", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "omnipost-app-launcher-"));
+    temporaryDirectories.push(directory);
+    const logPath = path.join(directory, "children.log");
+    const fakeNext = `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+const record = (event) => appendFileSync(process.env.LAUNCHER_LOG, JSON.stringify({ command: "next", event, args: process.argv.slice(2), localOnly: process.env.OMNIPOST_LOCAL_ONLY }) + "\\n");
+record("start");
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { record(signal); process.exit(0); });
+setInterval(() => {}, 1000);
+`;
+    const nextPath = path.join(directory, "next");
+    writeFileSync(nextPath, fakeNext);
+    chmodSync(nextPath, 0o755);
+
+    const launcher = spawn(process.execPath, ["scripts/dev-app.mjs"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PATH: `${directory}:${process.env.PATH}`,
+        LAUNCHER_LOG: logPath,
+        PUBLIC_BASE_URL: "",
+        TIKTOK_REDIRECT_URI:
+          "https://omnipost.ngrok-free.app/api/platforms/tiktok/callback",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    await waitFor(() => readEvents(logPath).some(({ event }) => event === "start"));
+    launcher.kill("SIGTERM");
+    await new Promise<void>((resolve, reject) => {
+      launcher.once("exit", () => resolve());
+      launcher.once("error", reject);
+    });
+
+    const events = readEvents(logPath) as Array<{
+      command: string;
+      event: string;
+      args: string[];
+      localOnly?: string;
+    }>;
+    const starts = events.filter(({ event }) => event === "start");
+    expect(starts.map(({ command }) => command)).toEqual(["next"]);
+    expect(starts[0]?.args).toEqual(["dev"]);
+    expect(starts[0]?.localOnly).toBe("1");
+    expect(events.some(({ event }) => event === "SIGTERM")).toBe(true);
+  });
+});

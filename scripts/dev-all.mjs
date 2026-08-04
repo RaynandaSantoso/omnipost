@@ -45,7 +45,11 @@ function invalid(message) {
 
 let publicOrigin;
 if (!publicBaseUrl) {
-  invalid("PUBLIC_BASE_URL is required by npm run dev. Use npm run dev:app for local-only development.");
+  invalid(
+    "PUBLIC_BASE_URL is required by npm run dev, which always starts a tunnel. " +
+      "Use npm run dev:app to run locally instead: it starts OmniPost alone and " +
+      "skips the platform configuration that needs the tunnel.",
+  );
 } else {
   try {
     publicOrigin = new URL(publicBaseUrl);
