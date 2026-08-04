@@ -19,14 +19,29 @@ function positiveInt(name: string) {
 // strict rules, so a half-usable tunnel config can never reach a deployment.
 export const LOCAL_ONLY_ENV_VAR = "OMNIPOST_LOCAL_ONLY";
 
-// Platform config that only works behind a public tunnel, by the Platform it
-// belongs to. YouTube is absent on purpose: its redirect is a localhost URL.
+// Platform config that only works behind the shared public tunnel: the
+// variable carrying the redirect URI, and the callback path it must end in.
+// One table, so validating this config and skipping it in a local-only run
+// can never disagree about which platforms it covers. YouTube is absent on
+// purpose — its redirect is a localhost URL that needs no tunnel.
 const TUNNEL_DEPENDENT_CONFIG = {
-  tiktok: "TIKTOK_REDIRECT_URI",
-  instagram: "INSTAGRAM_REDIRECT_URI",
-} as const satisfies Partial<Record<Platform, string>>;
+  tiktok: {
+    variable: "TIKTOK_REDIRECT_URI",
+    callbackPath: "/api/platforms/tiktok/callback",
+  },
+  instagram: {
+    variable: "INSTAGRAM_REDIRECT_URI",
+    callbackPath: "/api/platforms/instagram/callback",
+  },
+} as const satisfies Partial<
+  Record<Platform, { variable: string; callbackPath: string }>
+>;
 
 type TunnelDependentPlatform = keyof typeof TUNNEL_DEPENDENT_CONFIG;
+
+const TUNNEL_DEPENDENT_PLATFORMS = Object.keys(
+  TUNNEL_DEPENDENT_CONFIG,
+) as TunnelDependentPlatform[];
 
 const configFields = {
   DATABASE_URL: z
@@ -80,14 +95,10 @@ const configFields = {
 };
 
 const configSchema = z.object(configFields).superRefine((config, context) => {
-  const redirects = [
-    ["TIKTOK_REDIRECT_URI", config.TIKTOK_REDIRECT_URI, "/api/platforms/tiktok/callback"],
-    [
-      "INSTAGRAM_REDIRECT_URI",
-      config.INSTAGRAM_REDIRECT_URI,
-      "/api/platforms/instagram/callback",
-    ],
-  ] as const;
+  const redirects = TUNNEL_DEPENDENT_PLATFORMS.map((platform) => {
+    const { variable, callbackPath } = TUNNEL_DEPENDENT_CONFIG[platform];
+    return [variable, config[variable], callbackPath] as const;
+  });
 
   if (!config.PUBLIC_BASE_URL) {
     for (const [name, redirectUri] of redirects) {
@@ -154,7 +165,10 @@ export class ConfigError extends Error {
 type Environment = Record<string, string | undefined>;
 
 function isLocalOnly(env: Environment): boolean {
-  return env[LOCAL_ONLY_ENV_VAR] === "1";
+  // Ignored in production, where this is nobody's convenience: a deployed
+  // instance must refuse the very configuration a local-only run accepts,
+  // even if the variable is somehow inherited into its environment.
+  return env[LOCAL_ONLY_ENV_VAR] === "1" && env.NODE_ENV !== "production";
 }
 
 /**
@@ -162,24 +176,25 @@ function isLocalOnly(env: Environment): boolean {
  * can say which platforms will not be connectable in it. Empty for any other
  * run, and empty when a public origin makes the configuration usable as-is.
  */
-export function skippedPlatformConfig(
+export function platformsWithSkippedConfig(
   env: Environment = process.env,
 ): TunnelDependentPlatform[] {
   if (!isLocalOnly(env) || env.PUBLIC_BASE_URL) return [];
-  const platforms = Object.keys(TUNNEL_DEPENDENT_CONFIG) as TunnelDependentPlatform[];
-  return platforms.filter((platform) => env[TUNNEL_DEPENDENT_CONFIG[platform]]);
+  return TUNNEL_DEPENDENT_PLATFORMS.filter(
+    (platform) => env[TUNNEL_DEPENDENT_CONFIG[platform].variable],
+  );
 }
 
 // Drop what a local-only run cannot honour before validating, so the schema
 // itself stays strict — there is one set of rules, applied to an environment
 // this mode has already narrowed to what it can actually serve.
 function withoutSkippedConfig(env: Environment): Environment {
-  const skipped = skippedPlatformConfig(env);
+  const skipped = platformsWithSkippedConfig(env);
   if (skipped.length === 0) return env;
 
   const narrowed = { ...env };
   for (const platform of skipped) {
-    delete narrowed[TUNNEL_DEPENDENT_CONFIG[platform]];
+    delete narrowed[TUNNEL_DEPENDENT_CONFIG[platform].variable];
   }
   return narrowed;
 }

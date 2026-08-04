@@ -3,7 +3,7 @@ import {
   ConfigError,
   LOCAL_ONLY_ENV_VAR,
   loadConfig,
-  skippedPlatformConfig,
+  platformsWithSkippedConfig,
 } from "@/lib/config";
 
 describe("loadConfig", () => {
@@ -170,13 +170,13 @@ describe("local-only mode", () => {
   });
 
   it("names the platforms whose config it skipped", () => {
-    expect(skippedPlatformConfig({ ...tunnelLeftovers, [LOCAL_ONLY_ENV_VAR]: "1" }))
+    expect(platformsWithSkippedConfig({ ...tunnelLeftovers, [LOCAL_ONLY_ENV_VAR]: "1" }))
       .toEqual(["tiktok", "instagram"]);
   });
 
   it("skips nothing when only the platforms it can honour are configured", () => {
     expect(
-      skippedPlatformConfig({
+      platformsWithSkippedConfig({
         DATABASE_URL: "file:./dev.db",
         YOUTUBE_REDIRECT_URI: "http://localhost:3000/api/platforms/youtube/callback",
         [LOCAL_ONLY_ENV_VAR]: "1",
@@ -205,8 +205,23 @@ describe("local-only mode", () => {
         [LOCAL_ONLY_ENV_VAR]: "1",
       }),
     ).toThrow(/TIKTOK_REDIRECT_URI/);
-    expect(skippedPlatformConfig({ ...tunnelLeftovers, PUBLIC_BASE_URL: "https://omnipost.ngrok-free.app", [LOCAL_ONLY_ENV_VAR]: "1" }))
+    expect(platformsWithSkippedConfig({ ...tunnelLeftovers, PUBLIC_BASE_URL: "https://omnipost.ngrok-free.app", [LOCAL_ONLY_ENV_VAR]: "1" }))
       .toEqual([]);
+  });
+
+  // Nothing but the dev:app launcher sets the variable, but an environment can
+  // inherit anything. Production must refuse this configuration regardless.
+  it("is ignored in production, however the variable got there", () => {
+    const productionRun = {
+      ...tunnelLeftovers,
+      NODE_ENV: "production",
+      [LOCAL_ONLY_ENV_VAR]: "1",
+    };
+
+    expect(() => loadConfig(productionRun)).toThrow(
+      /TIKTOK_REDIRECT_URI requires PUBLIC_BASE_URL/,
+    );
+    expect(platformsWithSkippedConfig(productionRun)).toEqual([]);
   });
 
   // The relaxation is opt-in and belongs to one command. `npm run dev` and
@@ -219,6 +234,6 @@ describe("local-only mode", () => {
     expect(() => loadConfig({ ...tunnelLeftovers, NODE_ENV: "production" })).toThrow(
       /requires PUBLIC_BASE_URL/,
     );
-    expect(skippedPlatformConfig(tunnelLeftovers)).toEqual([]);
+    expect(platformsWithSkippedConfig(tunnelLeftovers)).toEqual([]);
   });
 });

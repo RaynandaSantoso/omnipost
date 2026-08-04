@@ -4,26 +4,26 @@ import { ConfigError, LOCAL_ONLY_ENV_VAR } from "@/lib/config";
 
 describe("bootFailureReport", () => {
   it("contradicts the Ready line Next has already printed", () => {
-    const report = bootFailureReport(new ConfigError("Invalid configuration"), 3000);
+    const report = bootFailureReport(new ConfigError("Invalid configuration"));
 
     expect(report).toContain("did not start");
-    expect(report).toContain("http://localhost:3000");
+    expect(report).toContain("Ready");
   });
 
   it("ends with the failure itself, so it is the last thing read", () => {
-    const report = bootFailureReport(new ConfigError("DATABASE_URL is required"), 3000);
+    const report = bootFailureReport(new ConfigError("DATABASE_URL is required"));
 
     expect(report.trimEnd().endsWith("DATABASE_URL is required")).toBe(true);
   });
 
-  it("reports the configured port rather than assuming the default", () => {
-    expect(bootFailureReport(new ConfigError("nope"), 4001)).toContain(
-      "http://localhost:4001",
-    );
+  // Next falls back to another port when the configured one is taken, so a URL
+  // built here would eventually point somewhere the operator never used.
+  it("points at the address Next printed rather than naming one", () => {
+    expect(bootFailureReport(new ConfigError("nope"))).not.toMatch(/localhost:\d+/);
   });
 
   it("describes a thrown non-Error without losing it", () => {
-    expect(bootFailureReport("something odd", 3000)).toContain("something odd");
+    expect(bootFailureReport("something odd")).toContain("something odd");
   });
 });
 

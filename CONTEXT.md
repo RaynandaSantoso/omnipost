@@ -86,11 +86,21 @@ Single-context repo. See `docs/adr/` for the decisions behind these terms.
   a platform already telling you no.
 - **Access gate** — the optional shared-password gate (`ACCESS_PASSWORD`),
   not a user-accounts system. One password, one session cookie, no
-  per-user identity.
+  per-user identity. It runs in `src/proxy.ts`, Next's per-request hook —
+  named for the framework's file convention, not for a domain concept.
+- **Local-only run** — a development run started by `npm run dev:app`, with
+  no public origin and so no tunnel. The connectable platforms that reach
+  OmniPost through that origin cannot be connected in one, so their
+  configuration is dropped rather than rejected, and named at startup. The
+  strict rules still bind `npm run dev` and production, which is what keeps
+  the relaxation from ever reaching a deployment.
 
 ## Where decisions live
 
 - `docs/prd/` — what's being built and why, one file per shipped
   increment (or, for `roadmap.md`, the living index across increments).
+  Only the v0.1 PRD is tracked in git, as the record of the walking
+  skeleton; the rest are local working documents, because their durable
+  decisions land here, in `docs/adr/`, and in the issues they produce.
 - `docs/adr/` — architectural decisions that outlive any single PRD
   (hosting, schema shape, cross-platform constraints).
