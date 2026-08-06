@@ -5,6 +5,54 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resetConfigCache } from "@/lib/config";
+import { JOB_POLICY_DEFAULTS } from "@/lib/job-policy";
+
+const publicOrigin = "https://omnipost.ngrok-free.app";
+
+// The spawned server reads its whole configuration from the environment, and
+// Next fills in anything the environment leaves undefined from the operator's
+// .env in the project directory. Both are ambient state this test must not
+// inherit: an operator whose .env points INSTAGRAM_REDIRECT_URI at a tunnel
+// other than the origin below fails the config's cross-validation, and the
+// server never boots. So every variable the config schema reads gets a value
+// chosen here — including the platforms this test never touches — and the
+// parent process is pinned to the same values so the signing key and public
+// origin cannot diverge between the two.
+function configEnvironment(databasePath: string): Record<string, string> {
+  return {
+    DATABASE_URL: `file:${databasePath}`,
+    ACCESS_PASSWORD: "shared test password",
+    TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
+    JOB_MAX_ATTEMPTS: String(JOB_POLICY_DEFAULTS.maxAttempts),
+    JOB_LEASE_MS: String(JOB_POLICY_DEFAULTS.leaseMs),
+    JOB_BACKOFF_BASE_MS: String(JOB_POLICY_DEFAULTS.backoffBaseMs),
+    JOB_BACKOFF_MAX_MS: String(JOB_POLICY_DEFAULTS.backoffMaxMs),
+    PUBLIC_BASE_URL: publicOrigin,
+    YOUTUBE_CLIENT_ID: "test-youtube-client-id",
+    YOUTUBE_CLIENT_SECRET: "test-youtube-client-secret",
+    YOUTUBE_REDIRECT_URI: `${publicOrigin}/api/platforms/youtube/callback`,
+    TIKTOK_CLIENT_KEY: "test-tiktok-client-key",
+    TIKTOK_CLIENT_SECRET: "test-tiktok-client-secret",
+    TIKTOK_REDIRECT_URI: `${publicOrigin}/api/platforms/tiktok/callback`,
+    INSTAGRAM_APP_ID: "test-instagram-app-id",
+    INSTAGRAM_APP_SECRET: "test-instagram-app-secret",
+    INSTAGRAM_REDIRECT_URI: `${publicOrigin}/api/platforms/instagram/callback`,
+  };
+}
+
+// Built rather than spread from process.env: only what a Node child needs to
+// run at all is passed through, so nothing outside configEnvironment can
+// reach the server.
+function childEnvironment(config: Record<string, string>): NodeJS.ProcessEnv {
+  return {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME,
+    TMPDIR: process.env.TMPDIR,
+    NODE_ENV: "development",
+    NEXT_TELEMETRY_DISABLED: "1",
+    ...config,
+  };
+}
 
 async function availablePort(): Promise<number> {
   const server = createServer();
@@ -53,17 +101,13 @@ describe("public upload media route", () => {
     directory = mkdtempSync(path.join(tmpdir(), "omnipost-public-media-"));
     const databasePath = path.join(directory, "test.db");
     writeFileSync(databasePath, "");
-    process.env.DATABASE_URL = `file:${databasePath}`;
-    process.env.PUBLIC_BASE_URL = "https://omnipost.ngrok-free.app";
-    process.env.TIKTOK_REDIRECT_URI =
-      "https://omnipost.ngrok-free.app/api/platforms/tiktok/callback";
-    process.env.TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString("base64");
-    process.env.ACCESS_PASSWORD = "shared test password";
+    const config = configEnvironment(databasePath);
+    Object.assign(process.env, config);
     resetConfigCache();
 
     execFileSync("npx", ["--no-install", "prisma", "migrate", "deploy"], {
       stdio: "inherit",
-      env: process.env,
+      env: childEnvironment(config),
     });
 
     const port = await availablePort();
@@ -73,7 +117,7 @@ describe("public upload media route", () => {
       ["node_modules/next/dist/bin/next", "dev", "-p", String(port)],
       {
         cwd: process.cwd(),
-        env: { ...process.env, NODE_ENV: "development" },
+        env: childEnvironment(config),
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -113,7 +157,7 @@ describe("public upload media route", () => {
     const generatedAt = Date.now();
     const publicUrl = createPublicMediaUrl(upload.id);
 
-    expect(publicUrl.origin).toBe("https://omnipost.ngrok-free.app");
+    expect(publicUrl.origin).toBe(publicOrigin);
     expect(publicUrl.pathname).toBe(`/api/uploads/${upload.id}/file`);
     const token = publicUrl.searchParams.get("token")!;
     expect(token).toMatch(/^v1\./);
