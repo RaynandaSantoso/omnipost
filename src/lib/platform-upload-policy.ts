@@ -50,6 +50,36 @@ export function platformTextOverrideViolation(
   return null;
 }
 
+/**
+ * Whether the caption this platform is actually going to receive fits.
+ *
+ * `platformTextOverrideViolation` measures the fields an operator typed. This
+ * measures what those fields turn into: title and description joined, with any
+ * hashtags already composed in. They diverge exactly where the gap was — a
+ * hashtag set is never a field anyone length-checked, but it is part of the
+ * caption, so an over-long one used to be discovered by the platform at upload
+ * time instead of by the form at authoring time.
+ *
+ * Only caption platforms are measured here. A title-and-description platform
+ * sends its fields as separate values, so the field-level checks already
+ * measure what it receives.
+ */
+export function composedCaptionViolation(
+  platform: Platform,
+  outbound: AuthoredText,
+): string | null {
+  const shape = uploadPolicyFor(platform).text;
+  if (shape.kind !== "caption") return null;
+  // Composed through outboundTextFor rather than shape.compose directly, so
+  // there is one definition of "the caption" and validation cannot drift from
+  // what the adapter is handed.
+  const [caption] = outboundTextFor(platform, outbound);
+  if (caption.maxLength !== null && caption.value.length > caption.maxLength) {
+    return `${platform} caption must be ${caption.maxLength} characters or fewer`;
+  }
+  return null;
+}
+
 interface TitleAndDescriptionTextShape {
   kind: "title-and-description";
   titleMaxLength: number | null;
