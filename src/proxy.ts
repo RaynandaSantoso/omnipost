@@ -7,9 +7,9 @@ import {
   warnIfPlaintext,
 } from "@/lib/session";
 
-// Constant-time password compare and HMAC signing need Node's crypto, not
-// the Edge runtime's Web Crypto subset — run middleware on Node.
-export const runtime = "nodejs";
+// Constant-time password compare and HMAC signing need Node's crypto, not the
+// Edge runtime's Web Crypto subset. The proxy always runs on Node, so this
+// needs no runtime declaration — and Next rejects one in a proxy file.
 
 // Reachable without a session: the login page and its API, and health,
 // which orchestrators/healthchecks must be able to poll without a cookie.
@@ -29,7 +29,7 @@ function withRenewedSession(request: NextRequest, password: string): NextRespons
   return response;
 }
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   warnIfPlaintext(request);
 
   const appConfig = getConfig();

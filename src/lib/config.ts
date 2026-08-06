@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { JOB_POLICY_DEFAULTS } from "@/lib/job-policy";
+import type { Platform } from "@/lib/platform";
 
 // Env vars arrive as strings; a malformed one must name itself and never
 // print its value, so the message is built from the variable name only.
@@ -10,7 +11,39 @@ function positiveInt(name: string) {
     .positive(`${name} must be a positive integer`);
 }
 
-const configSchema = z.object({
+// Set by `npm run dev:app`, the local-only development command. A local-only
+// run has no public origin, so the platforms that reach OmniPost through one
+// cannot be connected in it. Rather than refuse to start on a .env left over
+// from a tunnel session, such a run drops that config and says which platforms
+// it disabled. Nothing else sets this: `npm run dev` and production keep the
+// strict rules, so a half-usable tunnel config can never reach a deployment.
+export const LOCAL_ONLY_ENV_VAR = "OMNIPOST_LOCAL_ONLY";
+
+// Platform config that only works behind the shared public tunnel: the
+// variable carrying the redirect URI, and the callback path it must end in.
+// One table, so validating this config and skipping it in a local-only run
+// can never disagree about which platforms it covers. YouTube is absent on
+// purpose — its redirect is a localhost URL that needs no tunnel.
+const TUNNEL_DEPENDENT_CONFIG = {
+  tiktok: {
+    variable: "TIKTOK_REDIRECT_URI",
+    callbackPath: "/api/platforms/tiktok/callback",
+  },
+  instagram: {
+    variable: "INSTAGRAM_REDIRECT_URI",
+    callbackPath: "/api/platforms/instagram/callback",
+  },
+} as const satisfies Partial<
+  Record<Platform, { variable: string; callbackPath: string }>
+>;
+
+type TunnelDependentPlatform = keyof typeof TUNNEL_DEPENDENT_CONFIG;
+
+const TUNNEL_DEPENDENT_PLATFORMS = Object.keys(
+  TUNNEL_DEPENDENT_CONFIG,
+) as TunnelDependentPlatform[];
+
+const configFields = {
   DATABASE_URL: z
     .string({ message: "DATABASE_URL is required" })
     .min(1, "DATABASE_URL is required")
@@ -59,15 +92,13 @@ const configSchema = z.object({
   // A base64-encoded, 32-byte AES-256-GCM key. Never include the value in a
   // validation error: config errors name variables, not their secrets.
   TOKEN_ENCRYPTION_KEY: z.string().optional(),
-}).superRefine((config, context) => {
-  const redirects = [
-    ["TIKTOK_REDIRECT_URI", config.TIKTOK_REDIRECT_URI, "/api/platforms/tiktok/callback"],
-    [
-      "INSTAGRAM_REDIRECT_URI",
-      config.INSTAGRAM_REDIRECT_URI,
-      "/api/platforms/instagram/callback",
-    ],
-  ] as const;
+};
+
+const configSchema = z.object(configFields).superRefine((config, context) => {
+  const redirects = TUNNEL_DEPENDENT_PLATFORMS.map((platform) => {
+    const { variable, callbackPath } = TUNNEL_DEPENDENT_CONFIG[platform];
+    return [variable, config[variable], callbackPath] as const;
+  });
 
   if (!config.PUBLIC_BASE_URL) {
     for (const [name, redirectUri] of redirects) {
@@ -131,21 +162,71 @@ export class ConfigError extends Error {
   }
 }
 
+type Environment = Record<string, string | undefined>;
+
+function isLocalOnly(env: Environment): boolean {
+  // Ignored in production, where this is nobody's convenience: a deployed
+  // instance must refuse the very configuration a local-only run accepts,
+  // even if the variable is somehow inherited into its environment.
+  return env[LOCAL_ONLY_ENV_VAR] === "1" && env.NODE_ENV !== "production";
+}
+
+/**
+ * The platforms whose configuration a local-only run is dropping, so startup
+ * can say which platforms will not be connectable in it. Empty for any other
+ * run, and empty when a public origin makes the configuration usable as-is.
+ */
+export function platformsWithSkippedConfig(
+  env: Environment = process.env,
+): TunnelDependentPlatform[] {
+  if (!isLocalOnly(env) || env.PUBLIC_BASE_URL) return [];
+  return TUNNEL_DEPENDENT_PLATFORMS.filter(
+    (platform) => env[TUNNEL_DEPENDENT_CONFIG[platform].variable],
+  );
+}
+
+// Drop what a local-only run cannot honour before validating, so the schema
+// itself stays strict — there is one set of rules, applied to an environment
+// this mode has already narrowed to what it can actually serve.
+function withoutSkippedConfig(env: Environment): Environment {
+  const skipped = platformsWithSkippedConfig(env);
+  if (skipped.length === 0) return env;
+
+  const narrowed = { ...env };
+  for (const platform of skipped) {
+    delete narrowed[TUNNEL_DEPENDENT_CONFIG[platform].variable];
+  }
+  return narrowed;
+}
+
+// A checkout with no .env has no OmniPost variable set at all, which is worth
+// distinguishing from a filled-in .env that is missing one. Naming the file is
+// safe: it says nothing about any value, which config errors never print.
+// NODE_ENV is excluded because the runtime sets it — it says nothing about
+// whether the operator has configured anything.
+const CONFIGURABLE_VARS = Object.keys(configFields).filter(
+  (name) => name !== "NODE_ENV",
+);
+
+function isUnconfigured(env: Environment): boolean {
+  return CONFIGURABLE_VARS.every((name) => env[name] === undefined);
+}
+
 // Never interpolate the raw env value into the thrown message: a malformed
 // secret must be nameable without being loggable.
-export function loadConfig(
-  env: Record<string, string | undefined> = process.env,
-): AppConfig {
-  const result = configSchema.safeParse(env);
-  if (!result.success) {
-    const problems = result.error.issues.map(
-      (issue) => `  - ${issue.path.join(".") || "(config)"}: ${issue.message}`,
-    );
-    throw new ConfigError(
-      `Invalid configuration, refusing to start:\n${problems.join("\n")}`,
-    );
-  }
-  return result.data;
+export function loadConfig(env: Environment = process.env): AppConfig {
+  const result = configSchema.safeParse(withoutSkippedConfig(env));
+  if (result.success) return result.data;
+
+  const problems = result.error.issues.map(
+    (issue) => `  - ${issue.path.join(".") || "(config)"}: ${issue.message}`,
+  );
+  const hint = isUnconfigured(env)
+    ? "\n\nNo OmniPost configuration was found. If this is a fresh checkout, copy .env.example to .env and fill it in."
+    : "";
+  throw new ConfigError(
+    `Invalid configuration, refusing to start:\n${problems.join("\n")}${hint}`,
+  );
 }
 
 let cachedConfig: AppConfig | undefined;

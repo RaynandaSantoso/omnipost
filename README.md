@@ -65,6 +65,13 @@ To start only the local app without any companion services, run:
 npm run dev:app
 ```
 
+This is the local-only mode, and it needs no `PUBLIC_BASE_URL`. Any platform
+configuration that only works behind the shared tunnel — the TikTok and
+Instagram redirect URIs — is skipped rather than rejected, so a `.env` left
+over from a tunnel session still starts. Those platforms cannot be connected
+in such a run, and startup says which ones it skipped. Use `npm run dev` when
+you need them. YouTube is unaffected: its redirect URI is a localhost URL.
+
 `DATABASE_URL` in `.env.example` defaults to a SQLite file under `./data/`,
 created on first run.
 
@@ -85,7 +92,7 @@ exact callback path. Register the TikTok URI in TikTok Login Kit and the
 Instagram URI in the Meta developer app. The all-in-one `npm run dev` command
 uses the shared origin's hostname for one ngrok tunnel, even when both
 platforms are configured. Use `npm run dev:app` instead when no tunnel is
-needed.
+needed; it skips these redirect URIs rather than requiring them to be removed.
 
 ### Instagram connection setup
 

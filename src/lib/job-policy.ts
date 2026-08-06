@@ -1,5 +1,5 @@
 // Retry/lease policy, kept dependency-free so both the config schema (which
-// is imported by edge middleware) and the job engine can share one source of
+// is imported by the request proxy) and the job engine can share one source of
 // truth for the defaults.
 export interface JobPolicy {
   /** Attempt budget: a job is never claimed for an attempt beyond this. */

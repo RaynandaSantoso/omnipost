@@ -43,6 +43,12 @@ next-env.d.ts
 
 /src/generated/prisma
 
+# Sub-PRDs are drafted and kept locally — they are working documents whose
+# decisions land in CONTEXT.md, docs/adr/, and the issues they produce. Only
+# the v0.1 PRD stays tracked, as the record of the walking skeleton.
+/docs/prd/*
+!/docs/prd/v0.1-self-hosted-youtube-walking-skeleton.md
+
 # sqlite data (mounted as a volume in docker; local dev db lives here too)
 /data
 *.db
