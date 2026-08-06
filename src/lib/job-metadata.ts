@@ -1,6 +1,10 @@
 import { JOB_STATUS, jobStatusFrom } from "@/lib/job-status";
 import { platformSchema } from "@/lib/platform";
-import { applyHashtags, uploadPolicyFor } from "@/lib/platform-upload-policy";
+import {
+  applyHashtags,
+  composedCaptionViolation,
+  uploadPolicyFor,
+} from "@/lib/platform-upload-policy";
 
 export interface JobMetadataOverrides {
   platform: string;
@@ -88,6 +92,27 @@ export function jobMetadataState(
       ? "future-attempt" as const
       : "next-attempt" as const,
   };
+}
+
+/**
+ * Whether what this Job would send breaks its platform's text limits.
+ *
+ * Resolution runs first on purpose. Which hashtags apply, whether a caption
+ * override displaces them, and how they join the description are all decided
+ * by `resolveJobMetadata` — so measuring anything earlier measures a string
+ * the adapter is never handed. Overrides and the Upload's shared text are
+ * checked on identical terms because the composed result is the only thing
+ * the platform sees, and it does not care which half an operator typed.
+ */
+export function jobMetadataViolation(
+  job: JobMetadataOverrides,
+  upload: SharedUploadText,
+): string | null {
+  const platform = platformSchema.safeParse(job.platform);
+  // An unrecognised platform has no limits to check against. The write paths
+  // reject it on their own terms; this is not the place to discover it.
+  if (!platform.success) return null;
+  return composedCaptionViolation(platform.data, resolveJobMetadata(job, upload));
 }
 
 export function resolveJobMetadata(

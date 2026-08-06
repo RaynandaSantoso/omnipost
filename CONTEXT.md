@@ -49,6 +49,12 @@ Single-context repo. See `docs/adr/` for the decisions behind these terms.
   the captured text/source also powers the active-attempt status audit.
   Caption-only overrides are already-finished captions, so resolution clears
   the description instead of composing it a second time.
+  Text limits are measured against this resolved result, never against the
+  fields an operator typed: hashtags are composed into it and belong to no
+  field, so measuring earlier misses them entirely. Both write paths — creating
+  an Upload and editing a Job's overrides — validate every target platform, not
+  only the ones carrying an override, because an Upload's shared text and
+  hashtag set can overflow a caption on their own.
 - **Lease** — a time-bounded claim a background worker holds on a Job
   while working it, renewed by heartbeat. An expired lease is what makes
   a job reclaimable after a crash, rather than stuck forever.

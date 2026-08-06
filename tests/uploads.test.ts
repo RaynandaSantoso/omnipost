@@ -277,6 +277,70 @@ describe("POST /api/uploads", () => {
     expect(job.descriptionOverride).toBeNull();
   });
 
+  it("rejects a shared hashtag set that overflows a caption platform's limit", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "T",
+      description: "y".repeat(2_190),
+      platform: "tiktok",
+      hashtags: ["overflow"],
+    }));
+
+    expect(response.status).toBe(400);
+    const { error } = await response.json();
+    expect(error).toBe("tiktok caption must be 2200 characters or fewer");
+  });
+
+  it("accepts the same upload once the hashtags that overflowed it are gone", async () => {
+    // The shared text is unchanged from the test above, so the rejection there
+    // is attributable to the hashtags and nothing else.
+    const { POST } = await import("@/app/api/uploads/route");
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "T",
+      description: "y".repeat(2_190),
+      platform: "tiktok",
+      hashtags: [],
+    }));
+
+    expect(response.status).toBe(201);
+  });
+
+  it("rejects a per-platform hashtag override that overflows the caption", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "T",
+      description: "y".repeat(2_190),
+      platform: "instagram",
+      hashtags: [],
+      overrides: { instagram: { hashtags: ["overflow"] } },
+    }));
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBe(
+      "instagram caption must be 2200 characters or fewer",
+    );
+  });
+
+  it("lets a hashtag set too long for a caption platform through to YouTube", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const { prisma } = await import("@/lib/db");
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "T",
+      description: "y".repeat(2_190),
+      platform: "youtube",
+      hashtags: ["overflow"],
+    }));
+
+    expect(response.status).toBe(201);
+    const created = await response.json();
+    const upload = await prisma.upload.findUniqueOrThrow({ where: { id: created.id } });
+    expect(JSON.parse(upload.hashtags)).toEqual(["overflow"]);
+  });
+
   it("rejects a separate description for a caption-only override", async () => {
     const { POST } = await import("@/app/api/uploads/route");
     const response = await POST(uploadRequest({

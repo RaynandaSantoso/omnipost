@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import { jobMetadataState, sharedUploadText } from "@/lib/job-metadata";
+import { jobMetadataState, jobMetadataViolation, sharedUploadText } from "@/lib/job-metadata";
 import { logError } from "@/lib/log";
 import { platformSchema } from "@/lib/platform";
 import { platformTextOverrideViolation } from "@/lib/platform-upload-policy";
@@ -82,6 +82,16 @@ export async function PATCH(
     const validationError = platformTextOverrideViolation(platform.data, { title, description });
     if (validationError) {
       return NextResponse.json({ error: validationError }, { status: 400 });
+    }
+    // The fields above are what the operator typed; this is what the platform
+    // would receive once the hashtags are composed in. Both are checked
+    // because neither implies the other.
+    const composedViolation = jobMetadataViolation(
+      { platform: current.platform, titleOverride: title, descriptionOverride: description, hashtagsOverride: hashtags },
+      sharedUploadText(current.upload),
+    );
+    if (composedViolation) {
+      return NextResponse.json({ error: composedViolation }, { status: 400 });
     }
 
     const updated = await prisma.job.update({

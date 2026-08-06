@@ -198,6 +198,47 @@ describe("Job metadata API", () => {
     });
   });
 
+  it("rejects a hashtag override that overflows the composed caption", async () => {
+    const { PATCH } = await import("@/app/api/jobs/[id]/metadata/route");
+    const job = await seedJob("tiktok");
+
+    const response = await PATCH(updateRequest(job.id, {
+      hashtags: ["x".repeat(2_200)],
+    }), { params: Promise.resolve({ id: job.id }) });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBe(
+      "tiktok caption must be 2200 characters or fewer",
+    );
+  });
+
+  it("rejects a shared hashtag set the Job would inherit into an over-long caption", async () => {
+    // No override is being set here at all — the overflow comes from the
+    // Upload's shared set, which nothing on this path used to measure.
+    const { PATCH } = await import("@/app/api/jobs/[id]/metadata/route");
+    const job = await seedJob("tiktok", "pending", ["x".repeat(2_200)]);
+
+    const response = await PATCH(updateRequest(job.id, { title: null }), {
+      params: Promise.resolve({ id: job.id }),
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBe(
+      "tiktok caption must be 2200 characters or fewer",
+    );
+  });
+
+  it("accepts a hashtag override that rescues an over-long shared set", async () => {
+    const { PATCH } = await import("@/app/api/jobs/[id]/metadata/route");
+    const job = await seedJob("tiktok", "pending", ["x".repeat(2_200)]);
+
+    const response = await PATCH(updateRequest(job.id, { hashtags: ["short"] }), {
+      params: Promise.resolve({ id: job.id }),
+    });
+
+    expect(response.status).toBe(200);
+  });
+
   it("rejects a malformed hashtags override", async () => {
     const { PATCH } = await import("@/app/api/jobs/[id]/metadata/route");
     const job = await seedJob();

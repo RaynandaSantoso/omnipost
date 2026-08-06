@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveJobMetadata } from "@/lib/job-metadata";
+import { jobMetadataViolation, resolveJobMetadata } from "@/lib/job-metadata";
 
 describe("resolveJobMetadata", () => {
   it("falls back to the Upload's shared text when a Job has no overrides", () => {
@@ -144,5 +144,70 @@ describe("resolveJobMetadata", () => {
       title: "A finished TikTok caption #shorts",
       description: "",
     });
+  });
+});
+
+describe("jobMetadataViolation", () => {
+  // A caption platform with no overrides of its own: everything it sends comes
+  // from the Upload's shared text.
+  const sharedJob = { platform: "tiktok", titleOverride: null, descriptionOverride: null };
+
+  it("rejects a shared hashtag set that overflows the composed caption", () => {
+    expect(jobMetadataViolation(sharedJob, {
+      title: "Title",
+      description: "y".repeat(2_190),
+      hashtags: ["overflow"],
+    })).toBe("tiktok caption must be 2200 characters or fewer");
+  });
+
+  it("accepts the same text once the hashtags that overflowed it are gone", () => {
+    expect(jobMetadataViolation(sharedJob, {
+      title: "Title",
+      description: "y".repeat(2_190),
+      hashtags: [],
+    })).toBeNull();
+  });
+
+  it("rejects a per-Job hashtag override on the same terms", () => {
+    expect(jobMetadataViolation(
+      { ...sharedJob, hashtagsOverride: JSON.stringify(["overflow"]) },
+      { title: "Title", description: "y".repeat(2_190), hashtags: [] },
+    )).toBe("tiktok caption must be 2200 characters or fewer");
+  });
+
+  it("measures the override in place of the shared set it replaces", () => {
+    // The shared set would not fit; this Job is not sending it.
+    expect(jobMetadataViolation(
+      { ...sharedJob, hashtagsOverride: JSON.stringify([]) },
+      { title: "Title", description: "y".repeat(2_190), hashtags: ["overflow"] },
+    )).toBeNull();
+  });
+
+  it("measures a caption override as the finished caption it is", () => {
+    // resolveJobMetadata drops the shared hashtags rather than composing them
+    // onto an already-finished caption, so validation must not count them
+    // either — otherwise the form rejects text the adapter never sees.
+    expect(jobMetadataViolation(
+      { ...sharedJob, titleOverride: "Finished caption" },
+      { title: "Title", description: "y".repeat(2_190), hashtags: ["overflow"] },
+    )).toBeNull();
+    expect(jobMetadataViolation(
+      { ...sharedJob, titleOverride: "x".repeat(2_201) },
+      { title: "", description: "", hashtags: [] },
+    )).toBe("tiktok caption must be 2200 characters or fewer");
+  });
+
+  it("leaves a title-and-description platform to its own field limits", () => {
+    expect(jobMetadataViolation(
+      { platform: "youtube", titleOverride: null, descriptionOverride: null },
+      { title: "Title", description: "y".repeat(2_190), hashtags: ["overflow"] },
+    )).toBeNull();
+  });
+
+  it("says nothing about a platform it does not recognise", () => {
+    expect(jobMetadataViolation(
+      { platform: "facebook", titleOverride: null, descriptionOverride: null },
+      { title: "Title", description: "y".repeat(5_000), hashtags: [] },
+    )).toBeNull();
   });
 });
