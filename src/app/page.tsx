@@ -13,13 +13,21 @@ import {
 } from "@/lib/platform-upload-policy";
 import { resolveJobMetadata } from "@/lib/job-metadata";
 import {
+  connectionLoaded,
+  connectionOf,
   connectionRoute,
+  connectionStateText,
   connectionStatusText,
+  connectionsSettled,
+  connectionUnavailable,
   connectRoute,
+  loadingConnections,
   CONNECTABLE_PLATFORMS,
   CONNECTION_PRESENTATION,
   disconnected,
   type ConnectablePlatform,
+  type ConnectionLoadState,
+  type ConnectionsView,
   type ConnectionStatus,
 } from "@/lib/connection-status";
 
@@ -52,19 +60,16 @@ interface UploadView {
   jobs: JobView[];
 }
 
-/** Each connectable platform's latest status, or null while it is still loading. */
-type ConnectionsView = Record<ConnectablePlatform, ConnectionStatus | null>;
-
-const NO_CONNECTIONS: ConnectionsView = Object.fromEntries(
-  CONNECTABLE_PLATFORMS.map((platform) => [platform, null]),
-) as ConnectionsView;
-
 const STATUS_LABEL: Record<JobView["status"], string> = {
   pending: "Pending",
   uploading: "Uploading",
   done: "Done",
   failed: "Failed",
 };
+
+// How long a platform's status request may take before it counts as failed.
+// Generous: these are local database reads, so anything near this is broken.
+const STATUS_TIMEOUT_MS = 10_000;
 
 const MAX_FILE_SIZE_BYTES = 256 * 1024 * 1024;
 const MAX_DURATION_SECONDS = 180;
@@ -101,15 +106,65 @@ export function parseHashtagInput(raw: string): string[] {
   return raw.split(/[\s,]+/).map((tag) => tag.trim()).filter(Boolean);
 }
 
-function typeFor(file: File): string {
+function typeFor(file: Pick<File, "name" | "type">): string {
   if (file.type) return file.type;
   const extension = file.name.split(".").pop()?.toLowerCase();
   return extension === "mov" ? "video/quicktime" : `video/${extension ?? "unknown"}`;
 }
 
+/**
+ * Everything about a file that can be judged without decoding it.
+ *
+ * The platform policy check lives here rather than beside the duration probe
+ * because its answer depends on `platforms`: the same file passes for one set
+ * of targets and fails for another. That is precisely why the form must not
+ * ask this question until it knows which platforms it is uploading to.
+ */
+export function fileFormatIssue(
+  candidate: Pick<File, "name" | "size" | "type">,
+  platforms: Platform[],
+): string | null {
+  if (!SUPPORTED_VIDEO_TYPES.has(typeFor(candidate))) {
+    return "Use an MP4, WebM, or MOV video file.";
+  }
+  const platformIssue = uploadPolicyViolation(candidate, platforms);
+  if (platformIssue) return `${platformIssue}.`;
+  if (candidate.size > MAX_FILE_SIZE_BYTES) {
+    return "Use a video smaller than 256 MB.";
+  }
+  return null;
+}
+
+// The browser has to decode the file's metadata to learn how long it is, so
+// this leg is async where the checks above it are not. It depends only on the
+// file, never on which platforms are connected.
+function videoDurationIssue(candidate: File): Promise<string | null> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(candidate);
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      URL.revokeObjectURL(url);
+      resolve(
+        video.duration > MAX_DURATION_SECONDS
+          ? "Use a video three minutes or shorter."
+          : null,
+      );
+    };
+    video.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve("This video could not be checked. Choose an MP4, WebM, or MOV file.");
+    };
+    video.src = url;
+  });
+}
+
+// Only meaningful once connectionsSettled(connections) is true: a platform
+// that has not answered yet is absent from the result, which would read as
+// "not a target" rather than "not known yet".
 export function uploadTargetPlatforms(connections: ConnectionsView): Platform[] {
   const connected = CONNECTABLE_PLATFORMS.filter(
-    (platform) => connections[platform]?.connected,
+    (platform) => connectionOf(connections[platform])?.connected,
   );
   return connected.length > 0 ? [...connected] : ["dry-run"];
 }
@@ -131,25 +186,38 @@ export function instagramConnectionStatusText(status: ConnectionStatus | null): 
 
 export function PlatformConnectionSection({
   platform,
-  connection,
+  state,
   onDisconnect,
 }: {
   platform: ConnectablePlatform;
-  connection: ConnectionStatus | null;
+  state: ConnectionLoadState;
   onDisconnect: (platform: ConnectablePlatform) => void | Promise<void>;
 }) {
   const label = PLATFORM_LABEL[platform];
   const { disclaimer } = CONNECTION_PRESENTATION[platform];
+  const connection = connectionOf(state);
   return (
-    <section className="flex w-full flex-col gap-2 rounded-md border border-zinc-200 px-4 py-3 text-sm dark:border-zinc-800">
+    // Three visually identical bordered blocks, told apart only by their
+    // heading text — which a screen reader does not read as a section name.
+    <section
+      aria-label={`${label} connection`}
+      className="flex w-full flex-col gap-2 rounded-md border border-zinc-200 px-4 py-3 text-sm dark:border-zinc-800"
+    >
       <div className="flex items-center justify-between">
         <div>
           <p className="font-medium text-black dark:text-zinc-50">{label}</p>
           <p className="text-zinc-600 dark:text-zinc-400">
-            {connectionStatusText(platform, connection)}
+            {connectionStateText(platform, state)}
           </p>
         </div>
-        {connection?.connected ? (
+        {/*
+          While the status is still loading, neither control can be offered
+          honestly — "Connect" asserts there is no linked account and
+          "Disconnect" asserts there is one. After a failed request the state
+          is equally unknown, but connecting works either way, so it stays
+          available rather than leaving a dead row until the next reload.
+        */}
+        {state.phase === "loading" ? null : connection?.connected ? (
           <button
             type="button"
             onClick={() => onDisconnect(platform)}
@@ -614,8 +682,13 @@ export default function Home() {
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [upload, setUpload] = useState<UploadView | null>(null);
   const [history, setHistory] = useState<UploadView[]>([]);
-  const [connections, setConnections] = useState<ConnectionsView>(NO_CONNECTIONS);
+  const [connections, setConnections] = useState<ConnectionsView>(loadingConnections);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // A file's verdict is re-derived whenever the target platforms change, so
+  // two checks can be in flight at once (the duration probe is async). Only
+  // the newest may write its answer.
+  const fileCheckRef = useRef(0);
+  const durationIssueRef = useRef<{ file: File; issue: string | null } | null>(null);
   // React state (`submitting`) drives the disabled attribute, but a state
   // update isn't applied to the DOM synchronously — a fast double-click can
   // fire two submit events before the button actually disables. This ref is
@@ -639,13 +712,25 @@ export default function Home() {
 
   useEffect(() => {
     // One request per platform, each landing on its own key so a slow or
-    // failing platform never holds up the others.
+    // failing platform never holds up the others. A request that fails lands
+    // as "unavailable" rather than as an empty status: it is not evidence
+    // that the account is disconnected.
     for (const platform of CONNECTABLE_PLATFORMS) {
-      fetch(connectionRoute(platform))
-        .then(async (response) => (response.ok ? response.json() : null))
-        .catch(() => null)
-        .then((data: ConnectionStatus | null) => {
-          setConnections((current) => ({ ...current, [platform]: data }));
+      fetch(connectionRoute(platform), {
+        // The file check waits for every platform to report, so a request
+        // that hangs rather than fails would leave the form unable to judge a
+        // file at all. Time out into "unavailable" instead: an answer the
+        // operator can see beats a wait they cannot.
+        signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
+      })
+        .then(async (response) =>
+          response.ok
+            ? connectionLoaded((await response.json()) as ConnectionStatus)
+            : connectionUnavailable(),
+        )
+        .catch(() => connectionUnavailable())
+        .then((state) => {
+          setConnections((current) => ({ ...current, [platform]: state }));
         });
     }
   }, []);
@@ -653,7 +738,10 @@ export default function Home() {
   async function disconnect(platform: ConnectablePlatform) {
     const response = await fetch(connectionRoute(platform), { method: "DELETE" });
     if (response.ok) {
-      setConnections((current) => ({ ...current, [platform]: disconnected() }));
+      setConnections((current) => ({
+        ...current,
+        [platform]: connectionLoaded(disconnected()),
+      }));
     }
   }
 
@@ -679,43 +767,54 @@ export default function Home() {
     }, 1000);
   }
 
-  async function selectFile(candidate: File) {
+  function selectFile(candidate: File) {
     setFile(candidate);
     setError(null);
-    setCheckingFile(false);
-    if (!SUPPORTED_VIDEO_TYPES.has(typeFor(candidate))) {
-      setFileIssue("Use an MP4, WebM, or MOV video file.");
+    // No verdict is offered here. The effect below reaches one once it knows
+    // which platforms the file has to satisfy; until then the form is
+    // "checking", which is what keeps Upload disabled.
+    setFileIssue(null);
+    setCheckingFile(true);
+  }
+
+  useEffect(() => {
+    if (!file) return;
+    // Which limits apply depends on which platforms are connected. Answering
+    // before every platform has reported means measuring the file against
+    // dry-run policy and then contradicting that verdict, with nothing having
+    // changed from the operator's point of view, the moment the real statuses
+    // land. Re-running when `connections` changes also keeps the verdict true
+    // after a disconnect moves the target platforms.
+    if (!connectionsSettled(connections)) return;
+
+    const check = ++fileCheckRef.current;
+    const settle = (issue: string | null) => {
+      if (check !== fileCheckRef.current) return;
+      setFileIssue(issue);
+      setCheckingFile(false);
+    };
+
+    const formatIssue = fileFormatIssue(file, uploadTargetPlatforms(connections));
+    if (formatIssue) {
+      settle(formatIssue);
       return;
     }
-    const platformIssue = uploadPolicyViolation(
-      candidate,
-      uploadTargetPlatforms(connections),
-    );
-    if (platformIssue) {
-      setFileIssue(`${platformIssue}.`);
-      return;
-    }
-    if (candidate.size > MAX_FILE_SIZE_BYTES) {
-      setFileIssue("Use a video smaller than 256 MB.");
+
+    // Decoding a 256 MB file is not free, and how long it runs for does not
+    // depend on the connections that triggered this re-check — so each file
+    // is probed once and the answer reused.
+    const probed = durationIssueRef.current;
+    if (probed?.file === file) {
+      settle(probed.issue);
       return;
     }
 
     setCheckingFile(true);
-    const url = URL.createObjectURL(candidate);
-    const video = document.createElement("video");
-    video.preload = "metadata";
-    video.onloadedmetadata = () => {
-      URL.revokeObjectURL(url);
-      setFileIssue(video.duration > MAX_DURATION_SECONDS ? "Use a video three minutes or shorter." : null);
-      setCheckingFile(false);
-    };
-    video.onerror = () => {
-      URL.revokeObjectURL(url);
-      setFileIssue("This video could not be checked. Choose an MP4, WebM, or MOV file.");
-      setCheckingFile(false);
-    };
-    video.src = url;
-  }
+    void videoDurationIssue(file).then((issue) => {
+      durationIssueRef.current = { file, issue };
+      settle(issue);
+    });
+  }, [file, connections]);
 
   function sendUpload(body: FormData): Promise<UploadView> {
     return new Promise((resolve, reject) => {
@@ -746,7 +845,17 @@ export default function Home() {
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
-    if (!file || fileIssue || checkingFile || submitLockRef.current) {
+    // `checkingFile` already covers the unsettled case — it stays true until
+    // the effect above reaches a verdict — but the guard is stated outright
+    // so the re-check below can never run against dry-run targets that the
+    // arriving statuses are about to replace.
+    if (
+      !file
+      || fileIssue
+      || checkingFile
+      || !connectionsSettled(connections)
+      || submitLockRef.current
+    ) {
       return;
     }
     const platformIssue = uploadPolicyViolation(
@@ -850,7 +959,7 @@ export default function Home() {
           <PlatformConnectionSection
             key={platform}
             platform={platform}
-            connection={connections[platform]}
+            state={connections[platform]}
             onDisconnect={disconnect}
           />
         ))}
@@ -867,7 +976,7 @@ export default function Home() {
               setDragging(false);
               const dropped = event.dataTransfer.files[0];
               if (dropped) {
-                void selectFile(dropped);
+                selectFile(dropped);
               }
             }}
             className={`flex cursor-pointer flex-col items-center gap-1 rounded-md border-2 border-dashed px-4 py-8 text-center text-sm transition-colors ${
@@ -882,7 +991,7 @@ export default function Home() {
               className="hidden"
               onChange={(event) => {
                 const selected = event.target.files?.[0];
-                if (selected) void selectFile(selected);
+                if (selected) selectFile(selected);
               }}
             />
             {file ? (

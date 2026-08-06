@@ -2,9 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   CONNECTABLE_PLATFORMS,
   connectRoute,
+  connectionLoaded,
+  connectionLoading,
+  connectionOf,
   connectionRoute,
+  connectionStateText,
   connectionStatusText,
+  connectionUnavailable,
+  connectionsSettled,
   disconnected,
+  loadingConnections,
   CONNECTION_PRESENTATION,
   type ConnectablePlatform,
 } from "@/lib/connection-status";
@@ -73,6 +80,96 @@ describe("CONNECTION_PRESENTATION disclaimers", () => {
     expect(CONNECTION_PRESENTATION.youtube.disclaimer).toBeUndefined();
     expect(CONNECTION_PRESENTATION.tiktok.disclaimer).toContain("SELF_ONLY");
     expect(CONNECTION_PRESENTATION.instagram.disclaimer).toContain("Business or Creator");
+  });
+});
+
+describe("connectionStateText", () => {
+  // The bug this state machine exists to kill: every platform started as
+  // null, null read as "Not connected", so a fully connected dashboard
+  // claimed three disconnected accounts on every reload.
+  it("says it is still checking rather than claiming a platform is disconnected", () => {
+    for (const platform of CONNECTABLE_PLATFORMS) {
+      const text = connectionStateText(platform, connectionLoading());
+      expect(text).toBe("Checking...");
+      expect(text).not.toBe("Not connected");
+    }
+  });
+
+  // A request that never landed is not evidence of anything. Reporting it as
+  // "Not connected" invites the operator to reconnect an account that is
+  // already linked.
+  it("distinguishes a failed status request from a successful not-connected answer", () => {
+    for (const platform of CONNECTABLE_PLATFORMS) {
+      const failed = connectionStateText(platform, connectionUnavailable());
+      const answered = connectionStateText(platform, connectionLoaded(disconnected()));
+      expect(failed).toBe("Status unavailable");
+      expect(answered).toBe("Not connected");
+      expect(failed).not.toBe(answered);
+    }
+  });
+
+  it("defers to the loaded status text once a platform has answered", () => {
+    expect(connectionStateText("youtube", connectionLoaded(connected)))
+      .toBe("Connected to My Channel");
+    expect(connectionStateText("youtube", connectionLoaded({ ...connected, reconnectNeeded: true })))
+      .toBe("Reconnect needed");
+    expect(connectionStateText("instagram", connectionLoaded({ ...connected, externalAccountLabel: "my.creator" })))
+      .toBe("Connected to @my.creator");
+  });
+});
+
+describe("connectionOf", () => {
+  it("yields a status only once one has actually been received", () => {
+    expect(connectionOf(connectionLoading())).toBeNull();
+    expect(connectionOf(connectionUnavailable())).toBeNull();
+    expect(connectionOf(connectionLoaded(connected))).toEqual(connected);
+  });
+});
+
+describe("loadingConnections", () => {
+  it("starts every connectable platform in the loading phase", () => {
+    const connections = loadingConnections();
+    for (const platform of CONNECTABLE_PLATFORMS) {
+      expect(connections[platform]).toEqual({ phase: "loading" });
+    }
+  });
+
+  it("hands out a fresh record so one dashboard cannot mutate another's", () => {
+    expect(loadingConnections()).not.toBe(loadingConnections());
+  });
+});
+
+describe("connectionsSettled", () => {
+  it("is unsettled while any single platform is still loading", () => {
+    for (const pending of CONNECTABLE_PLATFORMS) {
+      const connections = Object.fromEntries(
+        CONNECTABLE_PLATFORMS.map((platform) => [
+          platform,
+          platform === pending ? connectionLoading() : connectionLoaded(connected),
+        ]),
+      ) as ReturnType<typeof loadingConnections>;
+      expect(connectionsSettled(connections)).toBe(false);
+    }
+  });
+
+  it("is unsettled before any platform has answered", () => {
+    expect(connectionsSettled(loadingConnections())).toBe(false);
+  });
+
+  it("settles once every platform has answered", () => {
+    const connections = Object.fromEntries(
+      CONNECTABLE_PLATFORMS.map((platform) => [platform, connectionLoaded(disconnected())]),
+    ) as ReturnType<typeof loadingConnections>;
+    expect(connectionsSettled(connections)).toBe(true);
+  });
+
+  // A failed request is an answer: waiting longer will not produce a better
+  // one, so the form must stop deferring and validate against what it knows.
+  it("counts a failed request as settled rather than waiting forever", () => {
+    const connections = Object.fromEntries(
+      CONNECTABLE_PLATFORMS.map((platform) => [platform, connectionUnavailable()]),
+    ) as ReturnType<typeof loadingConnections>;
+    expect(connectionsSettled(connections)).toBe(true);
   });
 });
 
