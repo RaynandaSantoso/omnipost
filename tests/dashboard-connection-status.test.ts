@@ -1,8 +1,17 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
-import { instagramConnectionStatusText, JobMetadataEditor, JobOutcome, JobStatusDetails, OutboundTextPreview, overrideDraftFor, parseHashtagInput, PlatformConnectionSection, PlatformOverrideEditors, tiktokConnectionStatusText, transferPercent, uploadTargetPlatforms, youtubeConnectionStatusText } from "@/app/page";
-import type { ConnectablePlatform, ConnectionStatus } from "@/lib/connection-status";
+import { fileFormatIssue, instagramConnectionStatusText, JobMetadataEditor, JobOutcome, JobStatusDetails, OutboundTextPreview, overrideDraftFor, parseHashtagInput, PlatformConnectionSection, PlatformOverrideEditors, tiktokConnectionStatusText, transferPercent, uploadTargetPlatforms, youtubeConnectionStatusText } from "@/app/page";
+import {
+  CONNECTABLE_PLATFORMS,
+  connectionLoaded,
+  connectionLoading,
+  connectionUnavailable,
+  disconnected,
+  type ConnectablePlatform,
+  type ConnectionLoadState,
+  type ConnectionStatus,
+} from "@/lib/connection-status";
 
 describe("youtubeConnectionStatusText", () => {
   it("renders the label when connected and labeled", () => {
@@ -129,25 +138,71 @@ describe("uploadTargetPlatforms", () => {
 
   it("targets every connected platform, in dashboard order", () => {
     expect(uploadTargetPlatforms({
-      youtube: link(true),
-      tiktok: link(false),
-      instagram: link(true),
+      youtube: connectionLoaded(link(true)),
+      tiktok: connectionLoaded(link(false)),
+      instagram: connectionLoaded(link(true)),
     })).toEqual(["youtube", "instagram"]);
   });
 
   it("falls back to a dry run when nothing is connected", () => {
-    expect(uploadTargetPlatforms({ youtube: null, tiktok: link(false), instagram: null }))
-      .toEqual(["dry-run"]);
+    expect(uploadTargetPlatforms({
+      youtube: connectionLoaded(link(false)),
+      tiktok: connectionLoaded(link(false)),
+      instagram: connectionLoaded(link(false)),
+    })).toEqual(["dry-run"]);
+  });
+
+  // Only ever read once connectionsSettled() is true — see selectFile. A
+  // platform that has not answered is not a target, because there is nothing
+  // to target it with.
+  it("does not treat an unanswered platform as a target", () => {
+    expect(uploadTargetPlatforms({
+      youtube: connectionLoading(),
+      tiktok: connectionUnavailable(),
+      instagram: connectionLoaded(link(true)),
+    })).toEqual(["instagram"]);
+  });
+});
+
+describe("fileFormatIssue", () => {
+  const video = { name: "clip.mp4", type: "video/mp4", size: 100 * 1024 * 1024 };
+
+  // The contradiction this issue is about, stated directly: the same file has
+  // two different verdicts depending on the target platforms, so a verdict
+  // reached before the statuses land is a coin flip the operator sees resolve.
+  it("gives one file opposite verdicts for different target platforms", () => {
+    expect(fileFormatIssue(video, ["dry-run"])).toBeNull();
+    expect(fileFormatIssue(video, ["tiktok"]))
+      .toBe("TikTok whole-file uploads must be 64 MB or smaller.");
+  });
+
+  it("rejects a file no platform accepts, whoever the targets are", () => {
+    expect(fileFormatIssue({ name: "clip.avi", type: "video/avi", size: 10 }, ["dry-run"]))
+      .toBe("Use an MP4, WebM, or MOV video file.");
+    expect(fileFormatIssue({ ...video, size: 300 * 1024 * 1024 }, ["dry-run"]))
+      .toBe("Use a video smaller than 256 MB.");
+  });
+
+  it("accepts a file every target platform allows", () => {
+    expect(fileFormatIssue({ ...video, size: 10 * 1024 * 1024 }, ["youtube", "tiktok"]))
+      .toBeNull();
   });
 });
 
 describe("PlatformConnectionSection", () => {
-  const render = (platform: ConnectablePlatform, connection: ConnectionStatus | null) =>
+  const render = (platform: ConnectablePlatform, state: ConnectionLoadState) =>
     renderToStaticMarkup(createElement(PlatformConnectionSection, {
       platform,
-      connection,
+      state,
       onDisconnect: () => {},
     }));
+
+  const linked: ConnectionStatus = {
+    connected: true,
+    externalAccountId: "chan-1",
+    externalAccountLabel: "My Channel",
+    reconnectNeeded: false,
+  };
 
   it("offers each platform's own connect link when it is not connected", () => {
     for (const [platform, label] of [
@@ -155,7 +210,7 @@ describe("PlatformConnectionSection", () => {
       ["tiktok", "TikTok"],
       ["instagram", "Instagram"],
     ] as const) {
-      const html = render(platform, null);
+      const html = render(platform, connectionLoaded(disconnected()));
       expect(html).toContain(`href="/api/platforms/${platform}/connect"`);
       expect(html).toContain(`Connect ${label}`);
       expect(html).toContain("Not connected");
@@ -164,23 +219,66 @@ describe("PlatformConnectionSection", () => {
   });
 
   it("swaps the connect link for a disconnect button once connected", () => {
-    const html = render("youtube", {
-      connected: true,
-      externalAccountId: "chan-1",
-      externalAccountLabel: "My Channel",
-      reconnectNeeded: false,
-    });
+    const html = render("youtube", connectionLoaded(linked));
     expect(html).toContain("Connected to My Channel");
     expect(html).toContain("Disconnect");
     expect(html).not.toContain("/api/platforms/youtube/connect");
   });
 
+  // The reload flicker this issue exists to remove: three connected accounts
+  // announcing themselves as disconnected until their fetches land.
+  it("reads as loading, not as disconnected, before the status arrives", () => {
+    for (const platform of CONNECTABLE_PLATFORMS) {
+      const html = render(platform, connectionLoading());
+      expect(html).toContain("Checking...");
+      expect(html).not.toContain("Not connected");
+    }
+  });
+
+  // Neither action can be offered honestly yet: "Connect" asserts there is no
+  // account and "Disconnect" asserts there is one.
+  it("offers no connect or disconnect action while still checking", () => {
+    const html = render("youtube", connectionLoading());
+    expect(html).not.toContain("/api/platforms/youtube/connect");
+    expect(html).not.toContain("Disconnect");
+  });
+
+  it("says a status request failed rather than reporting it as disconnected", () => {
+    const html = render("youtube", connectionUnavailable());
+    expect(html).toContain("Status unavailable");
+    expect(html).not.toContain("Not connected");
+    expect(html).not.toContain("Disconnect");
+    // Connecting is the one action that works whatever the true state is, so
+    // a failed check leaves the operator with a way forward.
+    expect(html).toContain('href="/api/platforms/youtube/connect"');
+  });
+
+  it("names each section for its platform, not just visually", () => {
+    for (const [platform, label] of [
+      ["youtube", "YouTube"],
+      ["tiktok", "TikTok"],
+      ["instagram", "Instagram"],
+    ] as const) {
+      expect(render(platform, connectionLoading()))
+        .toContain(`aria-label="${label} connection"`);
+    }
+  });
+
   it("keeps each platform's disclaimer with that platform", () => {
-    expect(render("tiktok", null)).toContain("Posts are private (SELF_ONLY)");
-    expect(render("instagram", null)).toContain("Instagram Business or Creator account");
-    const youtube = render("youtube", null);
+    const notConnected = connectionLoaded(disconnected());
+    expect(render("tiktok", notConnected)).toContain("Posts are private (SELF_ONLY)");
+    expect(render("instagram", notConnected)).toContain("Instagram Business or Creator account");
+    const youtube = render("youtube", notConnected);
     expect(youtube).not.toContain("SELF_ONLY");
     expect(youtube).not.toContain("Business or Creator");
+  });
+
+  // Each platform has its own request and its own key, so a hung one cannot
+  // hold its siblings in a loading state.
+  it("renders each platform's own phase independently of its siblings", () => {
+    expect(render("youtube", connectionLoaded(linked))).toContain("Connected to My Channel");
+    expect(render("tiktok", connectionLoading())).toContain("Checking...");
+    expect(render("instagram", connectionLoaded(disconnected()))).toContain("Not connected");
   });
 });
 

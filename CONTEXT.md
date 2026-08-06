@@ -32,6 +32,13 @@ Single-context repo. See `docs/adr/` for the decisions behind these terms.
   PlatformConnection: connected or not, whether it needs reconnecting, and
   the identifying fields. Deliberately carries no tokens; it is what
   `GET /api/platforms/<platform>` returns.
+- **Connection load state** — how far the dashboard has got in *learning* a
+  connection status: loading, loaded, or unavailable (the request failed).
+  Distinct from the status itself, because "we have not asked yet" and "we
+  asked and the answer was no account" are different facts and the operator
+  is owed the difference. Nothing that depends on which platforms are
+  connected — which file size and format limits apply, above all — may be
+  decided until every connectable platform has left the loading state.
 - **Upload** — one user-initiated publish action: the source video file,
   plus the shared title/description defaults for every platform it fans out
   to. A Job may override either value without changing these defaults.

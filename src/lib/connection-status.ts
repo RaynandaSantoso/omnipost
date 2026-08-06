@@ -94,3 +94,68 @@ export function connectionStatusText(
     ?? status.externalAccountId;
   return `Connected to ${account}`;
 }
+
+/**
+ * How far along the dashboard is in learning one platform's status.
+ *
+ * This is deliberately three states rather than `ConnectionStatus | null`.
+ * Null collapsed "still asking", "asked and there is no account linked", and
+ * "asked and could not reach the server" into one value, and the UI rendered
+ * the middle one for all three — so a connected dashboard announced three
+ * disconnected accounts on every reload, and a failed request was
+ * indistinguishable from a genuine answer.
+ */
+export type ConnectionLoadState =
+  | { phase: "loading" }
+  | { phase: "loaded"; status: ConnectionStatus }
+  | { phase: "unavailable" };
+
+export function connectionLoading(): ConnectionLoadState {
+  return { phase: "loading" };
+}
+
+export function connectionLoaded(status: ConnectionStatus): ConnectionLoadState {
+  return { phase: "loaded", status };
+}
+
+/** The status request itself failed — no claim is made about the account. */
+export function connectionUnavailable(): ConnectionLoadState {
+  return { phase: "unavailable" };
+}
+
+/** The received status, or null while there isn't one to reason about yet. */
+export function connectionOf(state: ConnectionLoadState): ConnectionStatus | null {
+  return state.phase === "loaded" ? state.status : null;
+}
+
+export function connectionStateText(
+  platform: ConnectablePlatform,
+  state: ConnectionLoadState,
+): string {
+  if (state.phase === "loading") return "Checking...";
+  // Not "Not connected": nothing was learned, so nothing may be asserted.
+  if (state.phase === "unavailable") return "Status unavailable";
+  return connectionStatusText(platform, state.status);
+}
+
+/** Every connectable platform's state, as the dashboard currently knows it. */
+export type ConnectionsView = Record<ConnectablePlatform, ConnectionLoadState>;
+
+/** The starting point for a dashboard that has asked nothing yet. */
+export function loadingConnections(): ConnectionsView {
+  return Object.fromEntries(
+    CONNECTABLE_PLATFORMS.map((platform) => [platform, connectionLoading()]),
+  ) as ConnectionsView;
+}
+
+/**
+ * Whether every platform has answered — including the ones whose request
+ * failed, since waiting longer will not improve that answer. Until this is
+ * true, no question whose answer depends on which platforms are connected
+ * (which file limits apply, above all) can be answered honestly.
+ */
+export function connectionsSettled(connections: ConnectionsView): boolean {
+  return CONNECTABLE_PLATFORMS.every(
+    (platform) => connections[platform].phase !== "loading",
+  );
+}
