@@ -214,14 +214,16 @@ describe("PlatformConnectionSection", () => {
       expect(html).toContain(`href="/api/platforms/${platform}/connect"`);
       expect(html).toContain(`Connect ${label}`);
       expect(html).toContain("Not connected");
-      expect(html).not.toContain("Disconnect");
+      // The button's own text, not the bare word: a platform's disclaimer may
+      // legitimately talk about disconnecting, and that is not a control.
+      expect(html).not.toContain(">Disconnect<");
     }
   });
 
   it("swaps the connect link for a disconnect button once connected", () => {
     const html = render("youtube", connectionLoaded(linked));
     expect(html).toContain("Connected to My Channel");
-    expect(html).toContain("Disconnect");
+    expect(html).toContain(">Disconnect<");
     expect(html).not.toContain("/api/platforms/youtube/connect");
   });
 

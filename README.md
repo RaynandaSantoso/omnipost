@@ -96,15 +96,26 @@ needed; it skips these redirect URIs rather than requiring them to be removed.
 
 ### Instagram connection setup
 
-Create an operator-owned Meta developer app and add Facebook Login for
-Business plus the Instagram Graph API. The Instagram account must be a
-Business or Creator account linked to a Facebook Page; personal or unlinked
-accounts cannot be used by Meta's publishing API. Register the exact
-`INSTAGRAM_REDIRECT_URI`, request the `pages_show_list`,
-`pages_read_engagement`, `instagram_basic`, and `instagram_content_publish`
-permissions, and set `INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET`,
+OmniPost uses **Instagram API with Instagram Login**. The Instagram account
+must be a Business or Creator account, and that is the only requirement — no
+Facebook Page is involved anywhere in the flow.
+
+Create an operator-owned Meta developer app and add the Instagram use case.
+Register the exact `INSTAGRAM_REDIRECT_URI` under it, and request the
+`instagram_business_basic` and `instagram_business_content_publish`
+permissions. Then set `INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET`,
 `INSTAGRAM_REDIRECT_URI`, `PUBLIC_BASE_URL`, and `TOKEN_ENCRYPTION_KEY` in
-`.env`. Then use **Connect Instagram** on the dashboard.
+`.env`, and use **Connect Instagram** on the dashboard.
+
+> `INSTAGRAM_APP_ID` and `INSTAGRAM_APP_SECRET` are the **Instagram** app
+> credentials, shown on the Instagram use case's own settings card. They are
+> not the Facebook app id and secret from the app dashboard — those are
+> different values, and they will not authenticate against this flow. An
+> installation set up before this change must replace both.
+
+Disconnecting deletes OmniPost's stored token. Instagram Login has no revoke
+endpoint, so Meta keeps its record of the grant until you also remove OmniPost
+under Instagram's **Apps and websites** settings.
 
 ## Tests
 

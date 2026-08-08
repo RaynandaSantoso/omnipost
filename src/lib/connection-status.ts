@@ -49,8 +49,11 @@ export const CONNECTION_PRESENTATION: Record<ConnectablePlatform, ConnectionPres
       "Posts are private (SELF_ONLY) until TikTok approves this app for public posting.",
   },
   instagram: {
+    // Two facts an operator can only learn here: which accounts work at all,
+    // and that "Disconnect" is weaker than it looks — Instagram Login offers
+    // no revoke endpoint, so OmniPost can only forget its own copy.
     disclaimer:
-      "Requires an Instagram Business or Creator account linked to a Facebook Page.",
+      "Requires an Instagram Business or Creator account. Instagram has no revoke API, so disconnecting deletes only the token OmniPost stored — remove OmniPost under Instagram's Apps and websites settings to end the grant at Meta.",
     accountName: (status) => status.externalAccountLabel
       ? `@${status.externalAccountLabel.replace(/^@/, "")}`
       : status.externalAccountId,

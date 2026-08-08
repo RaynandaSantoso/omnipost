@@ -23,7 +23,12 @@ Single-context repo. See `docs/adr/` for the decisions behind these terms.
   Platform: encrypted access/refresh tokens, expiry, and identifying
   fields for the connected account (`externalAccountId` — the platform's
   own opaque id — and `externalAccountLabel`, a human-readable handle
-  shown in the UI instead of the raw id).
+  shown in the UI instead of the raw id). The access/refresh pair is
+  YouTube's shape, and not every platform has two secrets to put in it:
+  Instagram issues one long-lived token that renews itself, so both columns
+  hold the same value rather than the schema growing a nullable column for
+  one platform's peculiarity. Instagram also connects one professional
+  account directly, with no Facebook Page in the model at all.
 - **Connectable platform** — a Platform a PlatformConnection can exist for.
   Every Platform except `dry-run`, which publishes nowhere and so has no
   account to link. The dashboard renders one connect/status block per

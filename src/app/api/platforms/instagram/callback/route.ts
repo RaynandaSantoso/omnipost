@@ -38,11 +38,11 @@ export async function GET(request: Request) {
   } catch (error) {
     const requestId = logError("platforms/instagram/callback", error);
     const message = error instanceof Error ? error.message : "Unable to connect Instagram";
-    const status = /state|redirect URI/i.test(message)
-      ? 400
-      : /Business or Creator/i.test(message)
-        ? 422
-        : 502;
+    // Only our own handshake checks can fault the request; everything else
+    // that fails here failed at Instagram. There is no longer an "ineligible
+    // account" case to report — Instagram Login refuses a non-professional
+    // account at its own consent screen, before any code reaches us.
+    const status = /state|redirect URI/i.test(message) ? 400 : 502;
     return NextResponse.json({ error: message, requestId }, { status });
   }
 }

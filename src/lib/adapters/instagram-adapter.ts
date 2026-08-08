@@ -11,7 +11,10 @@ import {
 } from "@/lib/platform-adapter";
 import { composeCaption } from "@/lib/platform-upload-policy";
 
-const GRAPH_BASE_URL = "https://graph.facebook.com/v23.0";
+// Instagram Login's graph host. Every path below is spelled identically on
+// graph.facebook.com — the difference is which token the host will accept, and
+// the connection now holds an Instagram one.
+const GRAPH_BASE_URL = "https://graph.instagram.com/v23.0";
 const RATE_LIMIT_ERROR_CODES = new Set([4, 17, 32, 613]);
 
 type GraphResponse = {

@@ -4,15 +4,27 @@ import { prisma } from "@/lib/db";
 import type { Platform } from "@/lib/platform";
 import { decryptToken, encryptToken } from "@/lib/token-crypto";
 
-const GRAPH_VERSION = "v23.0";
-const AUTHORIZE_URL = `https://www.facebook.com/${GRAPH_VERSION}/dialog/oauth`;
-const TOKEN_URL = `https://graph.facebook.com/${GRAPH_VERSION}/oauth/access_token`;
-const ACCOUNTS_URL = `https://graph.facebook.com/${GRAPH_VERSION}/me/accounts`;
-const PERMISSIONS_URL = `https://graph.facebook.com/${GRAPH_VERSION}/me/permissions`;
+// Instagram API with Instagram Login. The operator authorizes one professional
+// Instagram account directly: no Facebook app, Page, or Page token appears at
+// any step. The Page-based flow this replaced could not connect an account
+// Meta had provisioned without a Page the operator administers — see the
+// evidence in issue #38.
+//
+// Meta splits the handshake over three hosts. The consent screen belongs to
+// instagram.com, the code exchange to api.instagram.com, and every token or
+// account read to graph.instagram.com. These endpoints carry no version
+// segment, as Meta documents them; the publishing adapter's do, and pins one.
+const AUTHORIZE_URL = "https://www.instagram.com/oauth/authorize";
+const CODE_EXCHANGE_URL = "https://api.instagram.com/oauth/access_token";
+const LONG_LIVED_TOKEN_URL = "https://graph.instagram.com/access_token";
+const REFRESH_TOKEN_URL = "https://graph.instagram.com/refresh_access_token";
+const ACCOUNT_URL = "https://graph.instagram.com/me";
+// The `_business_` scopes are Instagram Login's own; they are not the
+// `instagram_basic`/`instagram_content_publish` pair the Facebook flow asked
+// for, and the two vocabularies are not interchangeable.
+const SCOPE = "instagram_business_basic,instagram_business_content_publish";
 const STATE_TTL_MS = 10 * 60 * 1000;
 const RENEWAL_WINDOW_MS = 24 * 60 * 60 * 1000;
-const PROFESSIONAL_ACCOUNT_GUIDANCE =
-  "Connect an Instagram Business or Creator account to a Facebook Page, then try again.";
 export const INSTAGRAM_PLATFORM = "instagram" satisfies Platform;
 
 type TokenResponse = {
@@ -20,10 +32,14 @@ type TokenResponse = {
   expires_in?: number;
 };
 
+type LongLivedToken = {
+  accessToken: string;
+  expiresInSeconds: number;
+};
+
 type InstagramAccount = {
   id: string;
   username: string;
-  pageAccessToken: string;
 };
 
 export class InstagramCredentialFailure extends Error {
@@ -72,34 +88,31 @@ async function json(response: Response): Promise<unknown> {
   return response.json().catch(() => null);
 }
 
-async function exchangeCodeForUserToken(code: string): Promise<string> {
+// The one form POST in the handshake. Instagram takes the code's credentials
+// in the body where the Facebook flow took them as query parameters, and it is
+// the only call here that needs the app id and the redirect URI.
+async function exchangeCodeForShortLivedToken(code: string): Promise<string> {
   const config = getValidatedInstagramOAuthConfig();
-  const url = new URL(TOKEN_URL);
-  url.search = new URLSearchParams({
-    client_id: config.INSTAGRAM_APP_ID,
-    client_secret: config.INSTAGRAM_APP_SECRET,
-    redirect_uri: config.INSTAGRAM_REDIRECT_URI,
-    code,
-  }).toString();
-  const response = await fetch(url);
+  const response = await fetch(CODE_EXCHANGE_URL, {
+    method: "POST",
+    body: new URLSearchParams({
+      client_id: config.INSTAGRAM_APP_ID,
+      client_secret: config.INSTAGRAM_APP_SECRET,
+      grant_type: "authorization_code",
+      redirect_uri: config.INSTAGRAM_REDIRECT_URI,
+      code,
+    }),
+  });
   const token = (await json(response)) as TokenResponse | null;
   if (!response.ok || !token?.access_token) {
-    throw new Error("Meta could not complete the Instagram connection");
+    throw new Error("Instagram could not complete the connection");
   }
   return token.access_token;
 }
 
-async function exchangeForLongLivedUserToken(
-  userToken: string,
-): Promise<Required<TokenResponse>> {
-  const config = getValidatedInstagramOAuthConfig();
-  const url = new URL(TOKEN_URL);
-  url.search = new URLSearchParams({
-    grant_type: "fb_exchange_token",
-    client_id: config.INSTAGRAM_APP_ID,
-    client_secret: config.INSTAGRAM_APP_SECRET,
-    fb_exchange_token: userToken,
-  }).toString();
+// Both long-lived token calls — the first exchange and every later renewal —
+// answer in the same shape and fail on the same terms, so only the URL differs.
+async function longLivedTokenFrom(url: URL): Promise<LongLivedToken> {
   let response: Response;
   try {
     response = await fetch(url);
@@ -117,61 +130,58 @@ async function exchangeForLongLivedUserToken(
       "retryable",
     );
   }
-  return { access_token: token.access_token, expires_in: token.expires_in };
+  return { accessToken: token.access_token, expiresInSeconds: token.expires_in };
 }
 
-async function findProfessionalAccount(
-  userToken: string,
-  expectedAccountId?: string,
-): Promise<InstagramAccount | null> {
-  let url: URL | null = new URL(ACCOUNTS_URL);
-  url.searchParams.set(
-    "fields",
-    "access_token,instagram_business_account{id,username}",
-  );
-  while (url) {
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        headers: { Authorization: `Bearer ${userToken}` },
-      });
-    } catch {
-      throw new InstagramCredentialFailure(
-        "Meta could not be reached while reading the Instagram account",
-        "retryable",
-      );
-    }
-    const body = (await json(response)) as {
-      data?: Array<{
-        access_token?: string;
-        instagram_business_account?: { id?: string; username?: string };
-      }>;
-      paging?: { next?: string };
-    } | null;
-    if (!response.ok) {
-      throw credentialFailureForResponse(response);
-    }
-    const accounts = (body?.data ?? []).flatMap((page) => {
-      const account = page.instagram_business_account;
-      return page.access_token && account?.id && account.username
-        ? [{ id: account.id, username: account.username, pageAccessToken: page.access_token }]
-        : [];
-    });
-    const match = expectedAccountId
-      ? accounts.find((account) => account.id === expectedAccountId)
-      : accounts[0];
-    if (match) return match;
-    if (!body?.paging?.next) {
-      url = null;
-      continue;
-    }
-    const next = new URL(body.paging.next);
-    if (next.origin !== new URL(ACCOUNTS_URL).origin) {
-      throw new Error("Meta returned an invalid Instagram account page");
-    }
-    url = next;
+function exchangeForLongLivedToken(shortLivedToken: string): Promise<LongLivedToken> {
+  const config = getValidatedInstagramOAuthConfig();
+  const url = new URL(LONG_LIVED_TOKEN_URL);
+  url.search = new URLSearchParams({
+    grant_type: "ig_exchange_token",
+    client_secret: config.INSTAGRAM_APP_SECRET,
+    access_token: shortLivedToken,
+  }).toString();
+  return longLivedTokenFrom(url);
+}
+
+// Instagram renews a long-lived token by being shown the token itself: there
+// is no separate refresh credential, which is why one value fills both token
+// columns. Meta requires the token to be at least a day old and not yet
+// expired, so a connection left untouched past 60 days fails here — correctly,
+// as a reconnect rather than a retry.
+function renewLongLivedToken(currentToken: string): Promise<LongLivedToken> {
+  const url = new URL(REFRESH_TOKEN_URL);
+  url.search = new URLSearchParams({
+    grant_type: "ig_refresh_token",
+    access_token: currentToken,
+  }).toString();
+  return longLivedTokenFrom(url);
+}
+
+// All that remains of what was a paginated walk over Facebook Pages hunting
+// for one with an Instagram account attached. Instagram Login returns the
+// account directly, because the account is the thing that was authorized.
+async function readAccount(token: string): Promise<InstagramAccount> {
+  const url = new URL(ACCOUNT_URL);
+  url.search = new URLSearchParams({
+    fields: "id,username",
+    access_token: token,
+  }).toString();
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch {
+    throw new InstagramCredentialFailure(
+      "Meta could not be reached while reading the Instagram account",
+      "retryable",
+    );
   }
-  return null;
+  const body = (await json(response)) as { id?: unknown; username?: unknown } | null;
+  if (!response.ok) throw credentialFailureForResponse(response);
+  if (typeof body?.id !== "string" || typeof body.username !== "string" || !body.username) {
+    throw new Error("Instagram did not identify the connected account");
+  }
+  return { id: body.id, username: body.username };
 }
 
 export async function startInstagramConnect(userId: string): Promise<string> {
@@ -191,8 +201,7 @@ export async function startInstagramConnect(userId: string): Promise<string> {
     client_id: config.INSTAGRAM_APP_ID,
     redirect_uri: config.INSTAGRAM_REDIRECT_URI,
     response_type: "code",
-    scope:
-      "pages_show_list,pages_read_engagement,instagram_basic,instagram_content_publish",
+    scope: SCOPE,
     state,
   }).toString();
   return url.toString();
@@ -224,15 +233,20 @@ export async function completeInstagramConnect(
   }
   await prisma.oAuthState.delete({ where: { id: saved.id } });
 
-  const shortToken = await exchangeCodeForUserToken(code);
-  const longToken = await exchangeForLongLivedUserToken(shortToken);
-  const account = await findProfessionalAccount(longToken.access_token);
-  if (!account) throw new Error(PROFESSIONAL_ACCOUNT_GUIDANCE);
+  const shortLivedToken = await exchangeCodeForShortLivedToken(code);
+  const token = await exchangeForLongLivedToken(shortLivedToken);
+  const account = await readAccount(token.accessToken);
 
   const connectionData = {
-    accessTokenEncrypted: encryptToken(account.pageAccessToken),
-    refreshTokenEncrypted: encryptToken(longToken.access_token),
-    accessTokenExpiresAt: new Date(Date.now() + longToken.expires_in * 1000),
+    // One token, written to both columns. Instagram Login issues a single
+    // long-lived token that authorizes publishing *and* renews itself, so the
+    // access/refresh split this schema inherited from YouTube has no second
+    // value to hold. Storing it twice keeps the column non-null for every
+    // platform rather than spending a migration on Instagram's peculiarity;
+    // `accessTokenEncrypted` is the copy this module ever reads.
+    accessTokenEncrypted: encryptToken(token.accessToken),
+    refreshTokenEncrypted: encryptToken(token.accessToken),
+    accessTokenExpiresAt: new Date(Date.now() + token.expiresInSeconds * 1000),
     externalAccountId: account.id,
     externalAccountLabel: account.username,
   };
@@ -272,22 +286,20 @@ export async function instagramConnectionStatus(userId: string) {
       };
 }
 
+/**
+ * Forget the stored Instagram credentials.
+ *
+ * Local only, because Instagram Login has no revoke endpoint — the Facebook
+ * flow's `DELETE /me/permissions` has no counterpart here. OmniPost holds no
+ * usable token afterwards, but Meta still records the grant until the operator
+ * removes OmniPost under Instagram's own Apps and websites settings. The
+ * dashboard says so beneath the connection row rather than leaving "Disconnect"
+ * to imply more than it does.
+ */
 export async function disconnectInstagram(userId: string): Promise<void> {
-  const connection = await prisma.platformConnection.findUnique({
-    where: { userId_platform: { userId, platform: INSTAGRAM_PLATFORM } },
+  await prisma.platformConnection.deleteMany({
+    where: { userId, platform: INSTAGRAM_PLATFORM },
   });
-  if (!connection) return;
-  const response = await fetch(PERMISSIONS_URL, {
-    method: "DELETE",
-    headers: {
-      Authorization: `Bearer ${decryptToken(connection.refreshTokenEncrypted)}`,
-    },
-  });
-  const body = (await json(response)) as { success?: boolean } | null;
-  if (!response.ok || body?.success !== true) {
-    throw new Error("Meta could not revoke the Instagram connection");
-  }
-  await prisma.platformConnection.delete({ where: { id: connection.id } });
 }
 
 export async function accessTokenForInstagram(userId: string): Promise<string> {
@@ -300,25 +312,25 @@ export async function accessTokenForInstagram(userId: string): Promise<string> {
   }
 
   try {
-    const longToken = await exchangeForLongLivedUserToken(
-      decryptToken(connection.refreshTokenEncrypted),
-    );
-    const account = await findProfessionalAccount(
-      longToken.access_token,
-      connection.externalAccountId,
-    );
-    if (!account) throw new Error(PROFESSIONAL_ACCOUNT_GUIDANCE);
+    const token = await renewLongLivedToken(decryptToken(connection.accessTokenEncrypted));
+    // Re-read the account instead of trusting the stored fields: it keeps the
+    // displayed handle current after a rename, and a renewed token that comes
+    // back naming somebody else is a reconnect, not a refresh.
+    const account = await readAccount(token.accessToken);
+    if (account.id !== connection.externalAccountId) {
+      throw new Error("The renewed Instagram token belongs to a different account");
+    }
     await prisma.platformConnection.update({
       where: { id: connection.id },
       data: {
-        accessTokenEncrypted: encryptToken(account.pageAccessToken),
-        refreshTokenEncrypted: encryptToken(longToken.access_token),
-        accessTokenExpiresAt: new Date(Date.now() + longToken.expires_in * 1000),
+        accessTokenEncrypted: encryptToken(token.accessToken),
+        refreshTokenEncrypted: encryptToken(token.accessToken),
+        accessTokenExpiresAt: new Date(Date.now() + token.expiresInSeconds * 1000),
         externalAccountLabel: account.username,
         refreshError: null,
       },
     });
-    return account.pageAccessToken;
+    return token.accessToken;
   } catch (error) {
     if (error instanceof InstagramCredentialFailure && error.kind === "retryable") {
       throw error;

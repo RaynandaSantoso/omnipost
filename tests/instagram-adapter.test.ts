@@ -9,7 +9,7 @@ import { resetConfigCache } from "@/lib/config";
 import { UNTRACKED_TRANSFER } from "@/lib/platform-adapter";
 
 const graphServer = setupServer();
-const graphBaseUrl = "https://graph.facebook.com/v23.0";
+const graphBaseUrl = "https://graph.instagram.com/v23.0";
 
 describe("InstagramAdapter", () => {
   let dir: string;
