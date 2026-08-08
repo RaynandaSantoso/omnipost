@@ -1,0 +1,15 @@
+#!/bin/zsh
+
+set -eu
+
+project_directory="$(cd "$(dirname "$0")/../../.." && pwd)"
+
+/usr/bin/osascript - "$project_directory" <<'APPLESCRIPT'
+on run argv
+  set projectDirectory to item 1 of argv
+  tell application "Terminal"
+    activate
+    do script "cd " & quoted form of projectDirectory & " && /usr/bin/env node scripts/run-all.mjs"
+  end tell
+end run
+APPLESCRIPT
