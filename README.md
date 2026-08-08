@@ -75,6 +75,25 @@ you need them. YouTube is unaffected: its redirect URI is a localhost URL.
 `DATABASE_URL` in `.env.example` defaults to a SQLite file under `./data/`,
 created on first run.
 
+### macOS launcher
+
+For normal use on the operator Mac, open `OmniPost.app` from the repository
+and keep it in the Dock. The launcher opens a Terminal window that owns the
+production app, the shared ngrok tunnel, and idle-sleep prevention; logs stay
+visible there, and `Ctrl+C` in that window stops the session. The browser opens
+after OmniPost answers on `http://localhost:3000`. Opening the app again only
+opens another browser tab.
+
+The first launch builds OmniPost when no production build exists. After
+changing the code, stop the running session and force a fresh build with:
+
+```sh
+node scripts/run-all.mjs --rebuild
+```
+
+The launcher uses the same `PUBLIC_BASE_URL` and platform redirect-URI rules
+as `npm run dev`, and it always starts the tunnel.
+
 ### Shared public runtime
 
 Install and authenticate the ngrok agent once, then set `PUBLIC_BASE_URL` in
