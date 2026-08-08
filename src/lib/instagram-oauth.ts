@@ -24,7 +24,12 @@ const ACCOUNT_URL = "https://graph.instagram.com/me";
 // for, and the two vocabularies are not interchangeable.
 const SCOPE = "instagram_business_basic,instagram_business_content_publish";
 const STATE_TTL_MS = 10 * 60 * 1000;
-const RENEWAL_WINDOW_MS = 24 * 60 * 60 * 1000;
+// Renewal only ever happens on the way to publishing something, so this window
+// is really "how long an idle stretch a connection survives": a token whose
+// last publish falls outside it expires with nobody to renew it, and the
+// operator has to reconnect. A week of slack against a 60-day token costs one
+// extra call at most, and Instagram accepts renewal from a day old onwards.
+const RENEWAL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 export const INSTAGRAM_PLATFORM = "instagram" satisfies Platform;
 
 type TokenResponse = {
@@ -56,7 +61,7 @@ function credentialFailureForResponse(response: Response): InstagramCredentialFa
   const retryable = response.status === 429 || response.status >= 500;
   return new InstagramCredentialFailure(
     retryable
-      ? "Meta is temporarily unavailable while renewing Instagram credentials"
+      ? "Instagram is temporarily unavailable while renewing credentials"
       : "Instagram connection needs reconnecting.",
     retryable ? "retryable" : "reconnect",
   );
@@ -88,13 +93,31 @@ async function json(response: Response): Promise<unknown> {
   return response.json().catch(() => null);
 }
 
-// The one form POST in the handshake. Instagram takes the code's credentials
-// in the body where the Facebook flow took them as query parameters, and it is
-// the only call here that needs the app id and the redirect URI.
+/**
+ * The token columns for one long-lived token, wherever it came from.
+ *
+ * One value is written to both. Instagram Login issues a single token that
+ * authorizes publishing *and* renews itself, so the access/refresh split this
+ * schema inherited from YouTube has no second secret to hold. Duplicating it
+ * keeps the column non-null for every platform rather than spending a
+ * migration on one platform's peculiarity; `accessTokenEncrypted` is the copy
+ * this module ever reads back.
+ */
+function tokenColumnsFor(token: LongLivedToken) {
+  return {
+    accessTokenEncrypted: encryptToken(token.accessToken),
+    refreshTokenEncrypted: encryptToken(token.accessToken),
+    accessTokenExpiresAt: new Date(Date.now() + token.expiresInSeconds * 1000),
+  };
+}
+
+// The one form POST in the handshake, and the only call needing the app id and
+// the redirect URI — everything downstream identifies itself with the token.
 async function exchangeCodeForShortLivedToken(code: string): Promise<string> {
   const config = getValidatedInstagramOAuthConfig();
   const response = await fetch(CODE_EXCHANGE_URL, {
     method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       client_id: config.INSTAGRAM_APP_ID,
       client_secret: config.INSTAGRAM_APP_SECRET,
@@ -118,7 +141,7 @@ async function longLivedTokenFrom(url: URL): Promise<LongLivedToken> {
     response = await fetch(url);
   } catch {
     throw new InstagramCredentialFailure(
-      "Meta could not be reached while renewing Instagram credentials",
+      "Instagram could not be reached while renewing credentials",
       "retryable",
     );
   }
@@ -126,7 +149,7 @@ async function longLivedTokenFrom(url: URL): Promise<LongLivedToken> {
   if (!response.ok || !token?.access_token || !token.expires_in) {
     if (!response.ok) throw credentialFailureForResponse(response);
     throw new InstagramCredentialFailure(
-      "Meta returned incomplete renewed Instagram credentials",
+      "Instagram returned incomplete renewed credentials",
       "retryable",
     );
   }
@@ -158,9 +181,15 @@ function renewLongLivedToken(currentToken: string): Promise<LongLivedToken> {
   return longLivedTokenFrom(url);
 }
 
-// All that remains of what was a paginated walk over Facebook Pages hunting
-// for one with an Instagram account attached. Instagram Login returns the
-// account directly, because the account is the thing that was authorized.
+/**
+ * The identity behind a token: exactly one account, named directly.
+ *
+ * Read once, at connect. Renewal deliberately does not re-read — Instagram
+ * hands back a token for the same account it was given one for, so there is no
+ * identity to re-establish, and a call there could only fail in ways that cost
+ * a working connection. The stored handle can therefore go stale after a
+ * rename until the next reconnect, which is a display detail, not a credential.
+ */
 async function readAccount(token: string): Promise<InstagramAccount> {
   const url = new URL(ACCOUNT_URL);
   url.search = new URLSearchParams({
@@ -172,7 +201,7 @@ async function readAccount(token: string): Promise<InstagramAccount> {
     response = await fetch(url);
   } catch {
     throw new InstagramCredentialFailure(
-      "Meta could not be reached while reading the Instagram account",
+      "Instagram could not be reached while reading the account",
       "retryable",
     );
   }
@@ -238,15 +267,7 @@ export async function completeInstagramConnect(
   const account = await readAccount(token.accessToken);
 
   const connectionData = {
-    // One token, written to both columns. Instagram Login issues a single
-    // long-lived token that authorizes publishing *and* renews itself, so the
-    // access/refresh split this schema inherited from YouTube has no second
-    // value to hold. Storing it twice keeps the column non-null for every
-    // platform rather than spending a migration on Instagram's peculiarity;
-    // `accessTokenEncrypted` is the copy this module ever reads.
-    accessTokenEncrypted: encryptToken(token.accessToken),
-    refreshTokenEncrypted: encryptToken(token.accessToken),
-    accessTokenExpiresAt: new Date(Date.now() + token.expiresInSeconds * 1000),
+    ...tokenColumnsFor(token),
     externalAccountId: account.id,
     externalAccountLabel: account.username,
   };
@@ -312,23 +333,13 @@ export async function accessTokenForInstagram(userId: string): Promise<string> {
   }
 
   try {
+    // Nothing else runs between renewing and storing. A renewal that succeeded
+    // has produced credentials this installation now holds, and any later step
+    // that failed would discard them and declare the connection broken.
     const token = await renewLongLivedToken(decryptToken(connection.accessTokenEncrypted));
-    // Re-read the account instead of trusting the stored fields: it keeps the
-    // displayed handle current after a rename, and a renewed token that comes
-    // back naming somebody else is a reconnect, not a refresh.
-    const account = await readAccount(token.accessToken);
-    if (account.id !== connection.externalAccountId) {
-      throw new Error("The renewed Instagram token belongs to a different account");
-    }
     await prisma.platformConnection.update({
       where: { id: connection.id },
-      data: {
-        accessTokenEncrypted: encryptToken(token.accessToken),
-        refreshTokenEncrypted: encryptToken(token.accessToken),
-        accessTokenExpiresAt: new Date(Date.now() + token.expiresInSeconds * 1000),
-        externalAccountLabel: account.username,
-        refreshError: null,
-      },
+      data: { ...tokenColumnsFor(token), refreshError: null },
     });
     return token.accessToken;
   } catch (error) {

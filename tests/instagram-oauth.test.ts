@@ -197,7 +197,7 @@ describe("Instagram OAuth routes", () => {
     expect(await prisma.platformConnection.count()).toBe(0);
   });
 
-  it("rejects missing, expired, replayed, and non-exact callback state before Meta calls", async () => {
+  it("rejects missing, expired, replayed, and non-exact callback state before any Instagram call", async () => {
     const { GET: start } = await import("@/app/api/platforms/instagram/connect/route");
     const { GET: callback } = await import("@/app/api/platforms/instagram/callback/route");
     const { prisma } = await import("@/lib/db");
@@ -248,7 +248,6 @@ describe("Instagram OAuth routes", () => {
         expect(url.searchParams.get("access_token")).toBe("stale-token");
         return HttpResponse.json({ access_token: "fresh-token", expires_in: SIXTY_DAYS_SECONDS });
       }),
-      http.get(accountUrl, () => HttpResponse.json({ id: "ig-123", username: "renamed.creator" })),
     );
 
     expect(await (await GET()).json()).toMatchObject({
@@ -256,11 +255,12 @@ describe("Instagram OAuth routes", () => {
       externalAccountLabel: "my.creator",
       reconnectNeeded: false,
     });
+    // Renewing costs exactly one call: no account re-read, which is why an
+    // unhandled request to graph.instagram.com/me would fail this test.
     await expect(accessTokenForInstagram(user.id)).resolves.toBe("fresh-token");
     const updated = await prisma.platformConnection.findUniqueOrThrow({ where: { id: connection.id } });
     expect(decryptToken(updated.accessTokenEncrypted)).toBe("fresh-token");
     expect(decryptToken(updated.refreshTokenEncrypted)).toBe("fresh-token");
-    expect(updated.externalAccountLabel).toBe("renamed.creator");
 
     // Instagram Login has no revoke endpoint, so disconnect is local only.
     // Any outbound call here would fail the test as an unhandled request.
@@ -288,40 +288,9 @@ describe("Instagram OAuth routes", () => {
       http.get(refreshTokenUrl, () =>
         HttpResponse.json({ access_token: "renewed-token", expires_in: SIXTY_DAYS_SECONDS }),
       ),
-      http.get(accountUrl, () => HttpResponse.json({ id: "ig-123", username: "my.creator" })),
     );
 
     await expect(accessTokenForInstagram(user.id)).resolves.toBe("renewed-token");
-  });
-
-  it("needs reconnecting when the renewed token names a different account", async () => {
-    const { prisma, ensureSeedUser } = await import("@/lib/db");
-    const { encryptToken } = await import("@/lib/token-crypto");
-    const { accessTokenForInstagram, instagramConnectionStatus } =
-      await import("@/lib/instagram-oauth");
-    const user = await ensureSeedUser();
-    await prisma.platformConnection.create({
-      data: {
-        userId: user.id,
-        platform: "instagram",
-        accessTokenEncrypted: encryptToken("stale-token"),
-        refreshTokenEncrypted: encryptToken("stale-token"),
-        accessTokenExpiresAt: new Date(Date.now() - 1),
-        externalAccountId: "ig-123",
-        externalAccountLabel: "my.creator",
-      },
-    });
-    oauthServer.use(
-      http.get(refreshTokenUrl, () =>
-        HttpResponse.json({ access_token: "fresh-token", expires_in: SIXTY_DAYS_SECONDS }),
-      ),
-      http.get(accountUrl, () => HttpResponse.json({ id: "ig-999", username: "someone.else" })),
-    );
-
-    await expect(accessTokenForInstagram(user.id)).rejects.toThrow("reconnecting");
-    await expect(instagramConnectionStatus(user.id)).resolves.toMatchObject({
-      reconnectNeeded: true,
-    });
   });
 
   it("marks the connection reconnect-needed when renewal fails", async () => {
