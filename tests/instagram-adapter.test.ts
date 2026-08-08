@@ -9,7 +9,7 @@ import { resetConfigCache } from "@/lib/config";
 import { UNTRACKED_TRANSFER } from "@/lib/platform-adapter";
 
 const graphServer = setupServer();
-const graphBaseUrl = "https://graph.facebook.com/v23.0";
+const graphBaseUrl = "https://graph.instagram.com/v23.0";
 
 describe("InstagramAdapter", () => {
   let dir: string;
@@ -59,7 +59,10 @@ describe("InstagramAdapter", () => {
         platform: "instagram",
         accessTokenEncrypted: encryptToken("page-token"),
         refreshTokenEncrypted: encryptToken("user-token"),
-        accessTokenExpiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000),
+        // A freshly issued 60-day token: comfortably outside the renewal
+        // window, so these tests exercise publishing and not credential
+        // renewal. A test that wants renewal moves the expiry itself.
+        accessTokenExpiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
         externalAccountId: "ig-user-123",
         externalAccountLabel: "my.creator",
       },
@@ -217,7 +220,7 @@ describe("InstagramAdapter", () => {
       data: { accessTokenExpiresAt: new Date(Date.now() - 1) },
     });
     graphServer.use(
-      http.get(`${graphBaseUrl}/oauth/access_token`, () =>
+      http.get("https://graph.instagram.com/refresh_access_token", () =>
         new HttpResponse(null, { status: 503 })),
     );
     const { InstagramAdapter } = await import("@/lib/adapters/instagram-adapter");
