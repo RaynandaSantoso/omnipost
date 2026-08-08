@@ -32,35 +32,24 @@ const fileEnv = {
 };
 const envValue = (name) => process.env[name] ?? fileEnv[name];
 
-function invalid(message) {
-  throw new Error(message);
-}
-
-function launchSettings() {
-  const appUrlValue = envValue("OMNIPOST_LAUNCH_URL") || DEFAULT_APP_URL;
-  let appUrl;
-  try {
-    appUrl = new URL(appUrlValue);
-  } catch {
-    invalid("OMNIPOST_LAUNCH_URL must be a valid HTTP URL.");
-  }
+function launchSettings(appUrl) {
   if (!['http:', 'https:'].includes(appUrl.protocol) || appUrl.pathname !== "/") {
-    invalid("OMNIPOST_LAUNCH_URL must be an HTTP origin without a path.");
+    throw new Error("OMNIPOST_LAUNCH_URL must be an HTTP origin without a path.");
   }
 
   const publicBaseUrl = envValue("PUBLIC_BASE_URL");
   if (!publicBaseUrl) {
-    invalid("PUBLIC_BASE_URL is required by the OmniPost Launcher.");
+    throw new Error("PUBLIC_BASE_URL is required by the OmniPost Launcher.");
   }
   if (!envValue("ACCESS_PASSWORD")) {
-    invalid("ACCESS_PASSWORD is required when PUBLIC_BASE_URL is configured.");
+    throw new Error("ACCESS_PASSWORD is required when PUBLIC_BASE_URL is configured.");
   }
 
   let publicOrigin;
   try {
     publicOrigin = new URL(publicBaseUrl);
   } catch {
-    invalid("PUBLIC_BASE_URL must be a valid URL.");
+    throw new Error("PUBLIC_BASE_URL must be a valid URL.");
   }
   if (
     publicOrigin.protocol !== "https:" ||
@@ -72,7 +61,7 @@ function launchSettings() {
     publicOrigin.username ||
     publicOrigin.password
   ) {
-    invalid(
+    throw new Error(
       "PUBLIC_BASE_URL must be an HTTPS origin without a path, query, fragment, or credentials.",
     );
   }
@@ -88,7 +77,7 @@ function launchSettings() {
     try {
       redirect = new URL(redirectUri);
     } catch {
-      invalid(`${name} must be a valid URL.`);
+      throw new Error(`${name} must be a valid URL.`);
     }
     if (
       redirect.origin !== publicOrigin.origin ||
@@ -100,7 +89,7 @@ function launchSettings() {
       redirect.username ||
       redirect.password
     ) {
-      invalid(`${name} must use PUBLIC_BASE_URL and end exactly in ${callbackPath}.`);
+      throw new Error(`${name} must use PUBLIC_BASE_URL and end exactly in ${callbackPath}.`);
     }
   }
 
@@ -124,11 +113,10 @@ async function appAnswers(appUrl) {
   }
 }
 
-function spawnCommand(command, args, options = {}) {
+function spawnCommand(command, args) {
   return spawn(command, args, {
     stdio: "inherit",
     detached: process.platform !== "win32",
-    ...options,
   });
 }
 
@@ -198,7 +186,7 @@ async function main() {
   try {
     probeUrl = new URL(appUrlValue);
   } catch {
-    invalid("OMNIPOST_LAUNCH_URL must be a valid HTTP URL.");
+    throw new Error("OMNIPOST_LAUNCH_URL must be a valid HTTP URL.");
   }
 
   if (await appAnswers(probeUrl)) {
@@ -206,7 +194,28 @@ async function main() {
     return;
   }
 
-  const { appUrl, port, publicOrigin } = launchSettings();
+  const { appUrl, port, publicOrigin } = launchSettings(probeUrl);
+  const sleepInhibitor = {
+    name: "Idle-sleep inhibitor",
+    command: "caffeinate",
+    args: ["-i"],
+  };
+  const inhibitor = spawnCommand(sleepInhibitor.command, sleepInhibitor.args);
+  activeChildren.push(inhibitor);
+  inhibitor.on("error", (error) => {
+    console.error(`Could not start ${sleepInhibitor.name}: ${error.message}`);
+    process.exitCode = 1;
+    stop();
+  });
+  inhibitor.on("exit", (code, signal) => {
+    const index = activeChildren.indexOf(inhibitor);
+    if (index >= 0) activeChildren.splice(index, 1);
+    if (!stopping) {
+      process.exitCode = code ?? (signal ? 1 : 0);
+      stop();
+    }
+  });
+
   console.log("Building OmniPost for production...");
   await commandResult("next", ["build"]);
   if (stopping) return;
@@ -214,8 +223,8 @@ async function main() {
   const services = [
     {
       name: "OmniPost",
-      command: "caffeinate",
-      args: ["-i", "next", "start", "-p", port],
+      command: "next",
+      args: ["start", "-p", port],
       message: appUrl.href,
     },
     {

@@ -76,7 +76,7 @@ const { appendFileSync } = require("node:fs");
 const name = require("node:path").basename(process.argv[1]);
 const record = (event) => appendFileSync(process.env.LAUNCHER_LOG, JSON.stringify({ command: name, event, args: process.argv.slice(2) }) + "\\n");
 record("start");
-if (name === "next" || name === "open") process.exit(0);
+if (name === "open" || (name === "next" && process.argv[2] === "build")) process.exit(0);
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { record(signal); process.exit(0); });
 setInterval(() => {}, 1000);
 `;
@@ -142,6 +142,36 @@ describe("production launcher", () => {
     expect(readEvents(logPath)).toEqual([]);
   });
 
+  it.each([
+    {
+      name: "non-HTTPS public origin",
+      environment: { PUBLIC_BASE_URL: "http://omnipost.ngrok-free.app" },
+      expectedError: "PUBLIC_BASE_URL",
+    },
+    {
+      name: "callback on another origin",
+      environment: {
+        TIKTOK_REDIRECT_URI: "https://other.ngrok-free.app/api/platforms/tiktok/callback",
+      },
+      expectedError: "TIKTOK_REDIRECT_URI",
+    },
+  ])("refuses $name before starting any process", async ({ environment, expectedError }) => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const result = spawnSync(process.execPath, ["scripts/launch.mjs"], {
+      cwd: process.cwd(),
+      env: {
+        ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+        ...environment,
+      },
+      encoding: "utf8",
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(expectedError);
+    expect(readEvents(logPath)).toEqual([]);
+  });
+
   it("builds, starts the production app and tunnel, opens when ready, and stops both", async () => {
     const port = await unusedPort();
     const { directory, logPath } = stubCommands();
@@ -167,14 +197,12 @@ describe("production launcher", () => {
     });
 
     const events = readEvents(logPath);
-    expect(events.find(({ command }) => command === "next")?.args).toEqual(["build"]);
-    expect(events.find(({ command }) => command === "caffeinate")?.args).toEqual([
-      "-i",
-      "next",
-      "start",
-      "-p",
-      String(port),
-    ]);
+    expect(
+      events
+        .filter(({ command, event }) => command === "next" && event === "start")
+        .map(({ args }) => args),
+    ).toEqual([["build"], ["start", "-p", String(port)]]);
+    expect(events.find(({ command }) => command === "caffeinate")?.args).toEqual(["-i"]);
     expect(events.find(({ command }) => command === "ngrok")?.args).toEqual([
       "http",
       "--url=omnipost.ngrok-free.app",
@@ -188,7 +216,7 @@ describe("production launcher", () => {
         .filter(({ event }) => event === "SIGTERM")
         .map(({ command }) => command)
         .sort(),
-    ).toEqual(["caffeinate", "ngrok"]);
+    ).toEqual(["caffeinate", "next", "ngrok"]);
   });
 
   it("only brings the browser forward when the app is already answering", async () => {
