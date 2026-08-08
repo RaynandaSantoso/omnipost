@@ -77,7 +77,7 @@ describe("TikTokAdapter", () => {
           "application/json; charset=UTF-8",
         );
         await expect(request.json()).resolves.toMatchObject({
-          post_info: { title: "My Short\nA short clip", privacy_level: "SELF_ONLY" },
+          post_info: { title: "My Short\n\nA short clip", privacy_level: "SELF_ONLY" },
           source_info: { source: "FILE_UPLOAD", video_size: 11, total_chunk_count: 1 },
         });
         return HttpResponse.json({ data: { publish_id: "publish-123", upload_url: "https://upload.tiktok.test/video/1" } });

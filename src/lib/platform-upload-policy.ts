@@ -112,8 +112,12 @@ interface PlatformUploadPolicy {
   unsupportedFormatMessage?: string;
 }
 
+// Title and description read as two blocks, not a title line running
+// straight into body text — the platform's own "more" truncation shows the
+// title on its own before a tap reveals the rest, so the blank line matches
+// where that break actually falls.
 export function composeCaption({ title, description }: AuthoredText): string {
-  return [title, description].filter(Boolean).join("\n");
+  return [title, description].filter(Boolean).join("\n\n");
 }
 
 export function formatHashtags(hashtags: string[]): string {

@@ -31,7 +31,7 @@ describe("platform text policy", () => {
   });
 
   it.each([
-    ["Title", "Description", "Title\nDescription"],
+    ["Title", "Description", "Title\n\nDescription"],
     ["Title", "", "Title"],
     ["", "Description", "Description"],
     ["", "", ""],
@@ -47,10 +47,10 @@ describe("platform text policy", () => {
       { key: "description", label: "Description", maxLength: 5_000, value: "A short clip" },
     ]);
     expect(outboundTextFor("tiktok", authored)).toEqual([
-      { key: "caption", label: "Caption", maxLength: 2_200, value: "My Short\nA short clip" },
+      { key: "caption", label: "Caption", maxLength: 2_200, value: "My Short\n\nA short clip" },
     ]);
     expect(outboundTextFor("instagram", authored)).toEqual([
-      { key: "caption", label: "Caption", maxLength: 2_200, value: "My Short\nA short clip" },
+      { key: "caption", label: "Caption", maxLength: 2_200, value: "My Short\n\nA short clip" },
     ]);
   });
 
@@ -75,7 +75,7 @@ describe("platform text policy", () => {
     const authored = { title: "My Short", description: "A short clip" };
     const applied = applyHashtags("tiktok", authored, ["launch", "demo"]);
     expect(outboundTextFor("tiktok", applied)).toEqual([
-      { key: "caption", label: "Caption", maxLength: 2_200, value: "My Short\nA short clip\n\n#launch #demo" },
+      { key: "caption", label: "Caption", maxLength: 2_200, value: "My Short\n\nA short clip\n\n#launch #demo" },
     ]);
   });
 

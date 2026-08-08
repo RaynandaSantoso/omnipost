@@ -377,7 +377,7 @@ describe("OutboundTextPreview", () => {
     expect(html.match(/>Title</g)).toHaveLength(1);
     expect(html.match(/>Description</g)).toHaveLength(1);
     expect(html.match(/>Caption</g)).toHaveLength(2);
-    expect(html.match(/My Short\nA short clip/g)).toHaveLength(2);
+    expect(html.match(/My Short\n\nA short clip/g)).toHaveLength(2);
   });
 
   it("shows override-resolved outbound text instead of stale shared text", () => {
@@ -406,7 +406,7 @@ describe("OutboundTextPreview", () => {
     }));
 
     expect(html).toContain("A short clip\n\n#launch #demo");
-    expect(html).toContain("My Short\nA short clip\n\n#launch #demo");
+    expect(html).toContain("My Short\n\nA short clip\n\n#launch #demo");
   });
 
   it("reflects a per-platform hashtag override without changing a sibling platform's shared hashtags", () => {
@@ -421,7 +421,7 @@ describe("OutboundTextPreview", () => {
     }));
 
     expect(html).toContain("A short clip\n\n#tiktokonly");
-    expect(html).toContain("My Short\nA short clip\n\n#launch #demo");
+    expect(html).toContain("My Short\n\nA short clip\n\n#launch #demo");
     expect(html).not.toContain("#launch #demo #tiktokonly");
   });
 });
@@ -436,11 +436,11 @@ describe("PlatformOverrideEditors", () => {
       hashtags: [],
     });
     expect(overrideDraftFor("tiktok", shared)).toEqual({
-      title: "Shared title\nShared description",
+      title: "Shared title\n\nShared description",
       hashtags: [],
     });
     expect(overrideDraftFor("instagram", shared)).toEqual({
-      title: "Shared title\nShared description",
+      title: "Shared title\n\nShared description",
       hashtags: [],
     });
   });
@@ -551,7 +551,7 @@ describe("JobMetadataEditor", () => {
       onSave: () => {},
     }));
 
-    expect(html).toContain(">Shared title\nShared description</textarea>");
+    expect(html).toContain(">Shared title\n\nShared description</textarea>");
   });
 
   it("edits future text while separately auditing an active attempt snapshot", () => {
@@ -570,7 +570,7 @@ describe("JobMetadataEditor", () => {
       onSave: () => {},
     }));
 
-    expect(html).toContain("Future shared title\nFuture shared description");
+    expect(html).toContain("Future shared title\n\nFuture shared description");
     expect(html).not.toContain("Caption currently in flight");
   });
 
@@ -650,7 +650,7 @@ describe("JobStatusDetails", () => {
     expect(html).toContain("Done");
     expect(html).toContain("Shared");
     expect(html).toContain("Caption");
-    expect(html).toContain("Shared title\nShared description");
+    expect(html).toContain("Shared title\n\nShared description");
     expect(html).toContain(outcome);
   });
 });

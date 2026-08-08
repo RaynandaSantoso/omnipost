@@ -156,7 +156,7 @@ describe("YouTubeAdapter", () => {
       ),
       http.post(tiktokInitUrl, async ({ request }) => {
         await expect(request.json()).resolves.toMatchObject({
-          post_info: { title: "Shared title\nShared description" },
+          post_info: { title: "Shared title\n\nShared description" },
         });
         return HttpResponse.json({
           data: {

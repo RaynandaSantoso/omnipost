@@ -99,7 +99,7 @@ describe("InstagramAdapter", () => {
       http.post(`${graphBaseUrl}/ig-user-123/media`, async ({ request }) => {
         const form = await request.formData();
         expect(form.get("media_type")).toBe("REELS");
-        expect(form.get("caption")).toBe("My Reel\nA short clip");
+        expect(form.get("caption")).toBe("My Reel\n\nA short clip");
         expect(form.get("share_to_feed")).toBeNull();
         expect(form.get("access_token")).toBe("page-token");
         const videoUrl = new URL(String(form.get("video_url")));
