@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 
 const DEFAULT_APP_URL = "http://localhost:3000";
 const DEFAULT_READY_TIMEOUT_MS = 120_000;
@@ -216,8 +217,14 @@ async function main() {
     }
   });
 
-  console.log("Building OmniPost for production...");
-  await commandResult("next", ["build"]);
+  const rebuildRequested = process.argv.includes("--rebuild");
+  const hasProductionBuild = existsSync(path.join(".next", "BUILD_ID"));
+  if (rebuildRequested || !hasProductionBuild) {
+    console.log(rebuildRequested ? "Rebuilding OmniPost for production..." : "Building OmniPost for production...");
+    await commandResult("next", ["build"]);
+  } else {
+    console.log("Using the existing production build. Pass --rebuild after changing code.");
+  }
   if (stopping) return;
 
   const services = [

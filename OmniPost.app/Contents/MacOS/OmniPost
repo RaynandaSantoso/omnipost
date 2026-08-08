@@ -9,7 +9,7 @@ on run argv
   set projectDirectory to item 1 of argv
   tell application "Terminal"
     activate
-    do script "cd " & quoted form of projectDirectory & " && /usr/bin/env node scripts/run-all.mjs"
+    do script "cd " & quoted form of projectDirectory & " && npm run launch"
   end tell
 end run
 APPLESCRIPT

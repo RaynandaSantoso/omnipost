@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -115,7 +116,7 @@ describe("production launcher", () => {
   });
 
   it("ships as a dock-pinnable macOS app that hands the session to Terminal", () => {
-    const bundle = path.join(process.cwd(), "launcher", "OmniPost.app", "Contents");
+    const bundle = path.join(process.cwd(), "OmniPost.app", "Contents");
     const plist = readFileSync(path.join(bundle, "Info.plist"), "utf8");
     const executable = path.join(bundle, "MacOS", "OmniPost");
 
@@ -123,6 +124,7 @@ describe("production launcher", () => {
     expect(plist).toContain("OmniPost.icns");
     expect(statSync(executable).mode & 0o111).not.toBe(0);
     expect(readFileSync(executable, "utf8")).toContain("osascript");
+    expect(readFileSync(executable, "utf8")).toContain("npm run launch");
   });
 
   it("refuses to start a public session without an access password", async () => {
@@ -172,14 +174,28 @@ describe("production launcher", () => {
     expect(readEvents(logPath)).toEqual([]);
   });
 
-  it("builds, starts the production app and tunnel, opens when ready, and stops both", async () => {
+  it.each([
+    { mode: "an existing production build", launcherArgs: [], expectsBuild: false },
+    { mode: "a requested rebuild", launcherArgs: ["--rebuild"], expectsBuild: true },
+  ])("uses $mode, starts every service, opens when ready, and stops cleanly", async ({
+    launcherArgs,
+    expectsBuild,
+  }) => {
     const port = await unusedPort();
     const { directory, logPath } = stubCommands();
-    const launcher = spawn(process.execPath, ["scripts/launch.mjs"], {
-      cwd: process.cwd(),
-      env: launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const workingDirectory = mkdtempSync(path.join(tmpdir(), "omnipost-launch-project-"));
+    temporaryDirectories.push(workingDirectory);
+    mkdirSync(path.join(workingDirectory, ".next"), { recursive: true });
+    writeFileSync(path.join(workingDirectory, ".next", "BUILD_ID"), "cached-build");
+    const launcher = spawn(
+      process.execPath,
+      [path.join(process.cwd(), "scripts/launch.mjs"), ...launcherArgs],
+      {
+        cwd: workingDirectory,
+        env: launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
 
     await waitFor(() => {
       const starts = readEvents(logPath).filter(({ event }) => event === "start");
@@ -197,11 +213,11 @@ describe("production launcher", () => {
     });
 
     const events = readEvents(logPath);
-    expect(
-      events
-        .filter(({ command, event }) => command === "next" && event === "start")
-        .map(({ args }) => args),
-    ).toEqual([["build"], ["start", "-p", String(port)]]);
+    const nextStarts = events
+      .filter(({ command, event }) => command === "next" && event === "start")
+      .map(({ args }) => args);
+    expect(nextStarts).toContainEqual(["start", "-p", String(port)]);
+    expect(nextStarts.some(([command]) => command === "build")).toBe(expectsBuild);
     expect(events.find(({ command }) => command === "caffeinate")?.args).toEqual(["-i"]);
     expect(events.find(({ command }) => command === "ngrok")?.args).toEqual([
       "http",

@@ -48,15 +48,17 @@ keep `npm run dev` running until Instagram finishes processing the video.
 
 Install and authenticate ngrok, then configure `PUBLIC_BASE_URL` and
 `ACCESS_PASSWORD` in `.env`. Double-click
-`launcher/OmniPost.app`, or drag that app to the Dock without moving it out of
+`OmniPost.app`, or drag that app to the Dock without moving it out of
 the repository. The Launcher opens a Terminal-owned production session,
-builds OmniPost, starts the app and reserved tunnel, prevents idle sleep, and
-opens a browser tab after the health endpoint answers. Keep the Terminal
-window open for logs; press `Ctrl+C` there to stop the app and tunnel together.
+builds OmniPost when no production build exists, starts the app and reserved
+tunnel, prevents idle sleep, and opens a browser tab after the health endpoint
+answers. Keep the Terminal window open for logs; press `Ctrl+C` there to stop
+the app and tunnel together.
 
 Launching it again while OmniPost is answering only brings its browser tab
 forward. The same production session can be started from a terminal with
-`npm run launch`.
+`npm run launch`. After changing code, stop the session and force a fresh build
+with `npm run launch -- --rebuild`.
 
 ## Local development (without Docker)
 
@@ -89,25 +91,6 @@ you need them. YouTube is unaffected: its redirect URI is a localhost URL.
 
 `DATABASE_URL` in `.env.example` defaults to a SQLite file under `./data/`,
 created on first run.
-
-### macOS launcher
-
-For normal use on the operator Mac, open `OmniPost.app` from the repository
-and keep it in the Dock. The launcher opens a Terminal window that owns the
-production app, the shared ngrok tunnel, and idle-sleep prevention; logs stay
-visible there, and `Ctrl+C` in that window stops the session. The browser opens
-after OmniPost answers on `http://localhost:3000`. Opening the app again only
-opens another browser tab.
-
-The first launch builds OmniPost when no production build exists. After
-changing the code, stop the running session and force a fresh build with:
-
-```sh
-node scripts/run-all.mjs --rebuild
-```
-
-The launcher uses the same `PUBLIC_BASE_URL` and platform redirect-URI rules
-as `npm run dev`, and it always starts the tunnel.
 
 ### Shared public runtime
 
