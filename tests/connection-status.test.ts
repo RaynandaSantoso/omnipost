@@ -78,8 +78,8 @@ describe("connectionStatusText", () => {
 describe("CONNECTION_PRESENTATION disclaimers", () => {
   it("keeps the disclaimer platform-specific rather than shared", () => {
     expect(CONNECTION_PRESENTATION.youtube.disclaimer).toBeUndefined();
-    expect(CONNECTION_PRESENTATION.tiktok.disclaimer).toContain("SELF_ONLY");
-    expect(CONNECTION_PRESENTATION.instagram.disclaimer).toContain("Business or Creator");
+    expect(CONNECTION_PRESENTATION.instagram.disclaimer).toBeUndefined();
+    expect(CONNECTION_PRESENTATION.tiktok.disclaimer).toContain("private");
   });
 });
 

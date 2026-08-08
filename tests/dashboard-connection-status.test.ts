@@ -268,11 +268,10 @@ describe("PlatformConnectionSection", () => {
 
   it("keeps each platform's disclaimer with that platform", () => {
     const notConnected = connectionLoaded(disconnected());
-    expect(render("tiktok", notConnected)).toContain("Posts are private (SELF_ONLY)");
-    expect(render("instagram", notConnected)).toContain("Instagram Business or Creator account");
+    expect(render("tiktok", notConnected)).toContain("Videos upload as private");
+    expect(render("instagram", notConnected)).not.toContain("Videos upload as private");
     const youtube = render("youtube", notConnected);
-    expect(youtube).not.toContain("SELF_ONLY");
-    expect(youtube).not.toContain("Business or Creator");
+    expect(youtube).not.toContain("Videos upload as private");
   });
 
   // Each platform has its own request and its own key, so a hung one cannot
@@ -407,7 +406,7 @@ describe("OutboundTextPreview", () => {
     }));
 
     expect(html).toContain("A short clip\n\n#launch #demo");
-    expect(html).toContain("My Short\nA short clip #launch #demo");
+    expect(html).toContain("My Short\nA short clip\n\n#launch #demo");
   });
 
   it("reflects a per-platform hashtag override without changing a sibling platform's shared hashtags", () => {
@@ -422,7 +421,7 @@ describe("OutboundTextPreview", () => {
     }));
 
     expect(html).toContain("A short clip\n\n#tiktokonly");
-    expect(html).toContain("My Short\nA short clip #launch #demo");
+    expect(html).toContain("My Short\nA short clip\n\n#launch #demo");
     expect(html).not.toContain("#launch #demo #tiktokonly");
   });
 });

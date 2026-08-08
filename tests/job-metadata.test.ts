@@ -56,13 +56,13 @@ describe("resolveJobMetadata", () => {
     });
   });
 
-  it("composes the Upload's shared hashtags inline for a caption platform with no override", () => {
+  it("composes the Upload's shared hashtags as their own block for a caption platform with no override", () => {
     expect(resolveJobMetadata(
       { platform: "tiktok", titleOverride: null, descriptionOverride: null },
       { title: "Shared title", description: "Shared description", hashtags: ["launch"] },
     )).toEqual({
       title: "Shared title",
-      description: "Shared description #launch",
+      description: "Shared description\n\n#launch",
     });
   });
 
@@ -127,7 +127,7 @@ describe("resolveJobMetadata", () => {
       upload,
     )).toEqual({
       title: "Shared title",
-      description: "Shared description #launch",
+      description: "Shared description\n\n#launch",
     });
   });
 

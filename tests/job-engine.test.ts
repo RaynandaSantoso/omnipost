@@ -187,7 +187,7 @@ describe("job engine", () => {
 
     expect(Object.fromEntries(received)).toEqual({
       youtube: { title: "Shared title", description: "Shared description\n\n#launch #demo" },
-      tiktok: { title: "Shared title", description: "Shared description #launch #demo" },
+      tiktok: { title: "Shared title", description: "Shared description\n\n#launch #demo" },
     });
 
     const jobs = await prisma.job.findMany({ where: { uploadId: upload.id } });
@@ -237,7 +237,7 @@ describe("job engine", () => {
 
     expect(Object.fromEntries(received)).toEqual({
       youtube: { title: "Shared title", description: "Shared description\n\n#tiktokonly" },
-      tiktok: { title: "Shared title", description: "Shared description #launch #demo" },
+      tiktok: { title: "Shared title", description: "Shared description\n\n#launch #demo" },
     });
   });
 

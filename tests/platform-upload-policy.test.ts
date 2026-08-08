@@ -71,11 +71,11 @@ describe("platform text policy", () => {
     });
   });
 
-  it("appends hashtags inline to the end of the caption for caption platforms", () => {
+  it("sets hashtags off as their own block at the end of the caption for caption platforms", () => {
     const authored = { title: "My Short", description: "A short clip" };
     const applied = applyHashtags("tiktok", authored, ["launch", "demo"]);
     expect(outboundTextFor("tiktok", applied)).toEqual([
-      { key: "caption", label: "Caption", maxLength: 2_200, value: "My Short\nA short clip #launch #demo" },
+      { key: "caption", label: "Caption", maxLength: 2_200, value: "My Short\nA short clip\n\n#launch #demo" },
     ]);
   });
 

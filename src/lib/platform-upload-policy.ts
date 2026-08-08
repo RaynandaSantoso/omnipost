@@ -124,12 +124,12 @@ export function formatHashtags(hashtags: string[]): string {
     .join(" ");
 }
 
-// A caption platform (TikTok/Instagram) wants hashtags appended inline to
-// the end of the caption text; a title-and-description platform (YouTube)
-// wants them appended to the description, where it shows a hashtag as a
-// clickable tag. Both land in `description` — outboundTextFor composes it
-// into the final caption for caption platforms — so the only thing that
-// varies per platform is the join between the existing text and the tags.
+// Hashtags always land as their own block, set off from the rest of the text
+// by a blank line — a title-and-description platform (YouTube) reads that as
+// its description followed by a clickable-tag block; a caption platform
+// (TikTok, Instagram) reads it as the same block at the end of the caption,
+// once outboundTextFor composes the two together. Both land in `description`,
+// so platform never enters the join itself.
 export function applyHashtags(
   platform: Platform,
   authored: AuthoredText,
@@ -137,10 +137,9 @@ export function applyHashtags(
 ): AuthoredText {
   const tagText = formatHashtags(hashtags);
   if (!tagText) return authored;
-  const isCaption = uploadPolicyFor(platform).text.kind === "caption";
   return {
     title: authored.title,
-    description: [authored.description, tagText].filter(Boolean).join(isCaption ? " " : "\n\n"),
+    description: [authored.description, tagText].filter(Boolean).join("\n\n"),
   };
 }
 
