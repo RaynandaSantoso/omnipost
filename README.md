@@ -14,7 +14,7 @@ Health can be checked at `GET /api/health`, which reports `200` when the app and
 
 ### Access gate
 
-By default the app is open — no login. If you set `ACCESS_PASSWORD` in `.env`, every route (except `/login` and `/api/health`) starts requiring that password.
+The app may run open only when it has no public origin. Setting `PUBLIC_BASE_URL` without a non-empty `ACCESS_PASSWORD` makes boot fail with a configuration error. When the password is set, every route except the deliberately public login, health, legal, verification, and signed-media routes requires it.
 
 Enter it once at `/login`; a session cookie (`omnipost_session`) is issued that's `HttpOnly`, `Secure` when served over HTTPS, and lasts 30 days, renewing on every request you make (sliding expiry — an idle session still expires 30 days after your last visit). Repeated wrong passwords back off exponentially (1s, 2s, 4s, ... capped at 60s) per source IP. This is a single shared password, not a user-accounts system — there's no username, no per-user session, no logout-everywhere. `POST /api/auth/logout` clears your own session cookie.
 
@@ -44,6 +44,20 @@ password gate because Meta cannot supply a browser session; the signature and
 expiry are its authorization boundary. Treat generated URLs as sensitive and
 keep `npm run dev` running until Instagram finishes processing the video.
 
+## Production Launcher (macOS)
+
+Install and authenticate ngrok, then configure `PUBLIC_BASE_URL` and
+`ACCESS_PASSWORD` in `.env`. Double-click
+`launcher/OmniPost.app`, or drag that app to the Dock without moving it out of
+the repository. The Launcher opens a Terminal-owned production session,
+builds OmniPost, starts the app and reserved tunnel, prevents idle sleep, and
+opens a browser tab after the health endpoint answers. Keep the Terminal
+window open for logs; press `Ctrl+C` there to stop the app and tunnel together.
+
+Launching it again while OmniPost is answering only brings its browser tab
+forward. The same production session can be started from a terminal with
+`npm run launch`.
+
 ## Local development (without Docker)
 
 ```sh
@@ -54,10 +68,10 @@ npm run dev
 
 `npm run dev` is the all-in-one development launcher. It always starts
 OmniPost and exactly one shared ngrok tunnel for every configured platform.
-`PUBLIC_BASE_URL` is required for this command. It prints both the local and
-public URLs at startup. Keep the terminal and computer running until all
-platform jobs have settled. Press `Ctrl+C` once to stop OmniPost and ngrok
-together.
+`PUBLIC_BASE_URL` and `ACCESS_PASSWORD` are required for this command. It
+prints both the local and public URLs at startup. Keep the terminal and
+computer running until all platform jobs have settled. Press `Ctrl+C` once to
+stop OmniPost and ngrok together.
 
 To start only the local app without any companion services, run:
 
@@ -65,7 +79,8 @@ To start only the local app without any companion services, run:
 npm run dev:app
 ```
 
-This is the local-only mode, and it needs no `PUBLIC_BASE_URL`. Any platform
+This is the local-only mode, and it does not serve `PUBLIC_BASE_URL` even when
+that variable remains in `.env`. Any platform
 configuration that only works behind the shared tunnel — the TikTok and
 Instagram redirect URIs — is skipped rather than rejected, so a `.env` left
 over from a tunnel session still starts. Those platforms cannot be connected
@@ -83,6 +98,7 @@ credentials. For example:
 
 ```dotenv
 PUBLIC_BASE_URL="https://your-domain.ngrok-free.dev"
+ACCESS_PASSWORD="choose-a-strong-shared-password"
 TIKTOK_REDIRECT_URI="https://your-domain.ngrok-free.dev/api/platforms/tiktok/callback"
 INSTAGRAM_REDIRECT_URI="https://your-domain.ngrok-free.dev/api/platforms/instagram/callback"
 ```

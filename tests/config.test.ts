@@ -18,6 +18,7 @@ describe("loadConfig", () => {
   it("accepts an HTTPS public origin used by platform callback URLs", () => {
     const config = loadConfig({
       DATABASE_URL: "file:./dev.db",
+      ACCESS_PASSWORD: "correct horse battery staple",
       PUBLIC_BASE_URL: "https://omnipost.ngrok-free.app",
       TIKTOK_REDIRECT_URI:
         "https://omnipost.ngrok-free.app/api/platforms/tiktok/callback",
@@ -26,6 +27,19 @@ describe("loadConfig", () => {
     });
 
     expect(config.PUBLIC_BASE_URL).toBe("https://omnipost.ngrok-free.app");
+  });
+
+  it("refuses a public origin without an access password", () => {
+    expect(() =>
+      loadConfig({
+        DATABASE_URL: "file:./dev.db",
+        PUBLIC_BASE_URL: "https://omnipost.ngrok-free.app",
+      }),
+    ).toThrow(/ACCESS_PASSWORD/);
+  });
+
+  it("permits a run without a public origin or access password", () => {
+    expect(loadConfig({ DATABASE_URL: "file:./dev.db" }).ACCESS_PASSWORD).toBeUndefined();
   });
 
   it.each([
@@ -40,6 +54,7 @@ describe("loadConfig", () => {
     expect(() =>
       loadConfig({
         DATABASE_URL: "file:./dev.db",
+        ACCESS_PASSWORD: "correct horse battery staple",
         PUBLIC_BASE_URL: publicBaseUrl,
       }),
     ).toThrow(/PUBLIC_BASE_URL/);
@@ -56,6 +71,7 @@ describe("loadConfig", () => {
     try {
       loadConfig({
         DATABASE_URL: "file:./dev.db",
+        ACCESS_PASSWORD: "correct horse battery staple",
         PUBLIC_BASE_URL: "https://omnipost.ngrok-free.app",
         [name]: redirectUri,
       });
@@ -196,17 +212,20 @@ describe("local-only mode", () => {
     );
   });
 
-  it("still validates the tunnel config when a public origin is present", () => {
-    expect(() =>
-      loadConfig({
-        DATABASE_URL: "file:./dev.db",
-        PUBLIC_BASE_URL: "https://omnipost.ngrok-free.app",
-        TIKTOK_REDIRECT_URI: "https://other.ngrok-free.app/api/platforms/tiktok/callback",
-        [LOCAL_ONLY_ENV_VAR]: "1",
-      }),
-    ).toThrow(/TIKTOK_REDIRECT_URI/);
-    expect(platformsWithSkippedConfig({ ...tunnelLeftovers, PUBLIC_BASE_URL: "https://omnipost.ngrok-free.app", [LOCAL_ONLY_ENV_VAR]: "1" }))
-      .toEqual([]);
+  it("drops tunnel-dependent configuration even when a public origin is present", () => {
+    const localRun = {
+      ...tunnelLeftovers,
+      PUBLIC_BASE_URL: "https://omnipost.ngrok-free.app",
+      TIKTOK_REDIRECT_URI: "https://other.ngrok-free.app/api/platforms/tiktok/callback",
+      [LOCAL_ONLY_ENV_VAR]: "1",
+    };
+
+    const config = loadConfig(localRun);
+
+    expect(config.PUBLIC_BASE_URL).toBeUndefined();
+    expect(config.TIKTOK_REDIRECT_URI).toBeUndefined();
+    expect(config.INSTAGRAM_REDIRECT_URI).toBeUndefined();
+    expect(platformsWithSkippedConfig(localRun)).toEqual(["tiktok", "instagram"]);
   });
 
   // Nothing but the dev:app launcher sets the variable, but an environment can

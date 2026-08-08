@@ -42,6 +42,18 @@ describe("localOnlyNotice", () => {
     expect(notice).toContain("PUBLIC_BASE_URL");
   });
 
+  it("still names skipped platforms when a public origin is left in the environment", () => {
+    const notice = localOnlyNotice({
+      DATABASE_URL: "file:./dev.db",
+      PUBLIC_BASE_URL: "https://omnipost.ngrok-free.app",
+      INSTAGRAM_REDIRECT_URI:
+        "https://omnipost.ngrok-free.app/api/platforms/instagram/callback",
+      [LOCAL_ONLY_ENV_VAR]: "1",
+    });
+
+    expect(notice).toContain("Instagram");
+  });
+
   it("reads as one platform when only one is skipped", () => {
     const notice = localOnlyNotice({
       DATABASE_URL: "file:./dev.db",

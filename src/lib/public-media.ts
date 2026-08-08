@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { getConfig } from "@/lib/config";
+import { getConfig, isLocalOnlyRun } from "@/lib/config";
 import { derivePublicMediaSigningKey } from "@/lib/token-crypto";
 
 export const PUBLIC_MEDIA_URL_LIFETIME_MS = 60 * 60 * 1000; // 1 hour
@@ -11,6 +11,9 @@ function signatureFor(uploadId: string, expiresAt: string, nonce: string): Buffe
 }
 
 export function createPublicMediaUrl(uploadId: string, now = Date.now()): URL {
+  if (isLocalOnlyRun()) {
+    throw new Error("Local-only runs cannot generate public media URLs");
+  }
   const publicBaseUrl = getConfig().PUBLIC_BASE_URL;
   if (!publicBaseUrl) {
     throw new Error("PUBLIC_BASE_URL is required to generate a public media URL");

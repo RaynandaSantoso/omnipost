@@ -113,6 +113,14 @@ const configSchema = z.object(configFields).superRefine((config, context) => {
     return;
   }
 
+  if (!config.ACCESS_PASSWORD) {
+    context.addIssue({
+      code: "custom",
+      path: ["ACCESS_PASSWORD"],
+      message: "ACCESS_PASSWORD is required when PUBLIC_BASE_URL is configured",
+    });
+  }
+
   const publicOrigin = new URL(config.PUBLIC_BASE_URL);
   if (
     publicOrigin.protocol !== "https:" ||
@@ -164,7 +172,7 @@ export class ConfigError extends Error {
 
 type Environment = Record<string, string | undefined>;
 
-function isLocalOnly(env: Environment): boolean {
+export function isLocalOnlyRun(env: Environment = process.env): boolean {
   // Ignored in production, where this is nobody's convenience: a deployed
   // instance must refuse the very configuration a local-only run accepts,
   // even if the variable is somehow inherited into its environment.
@@ -174,26 +182,27 @@ function isLocalOnly(env: Environment): boolean {
 /**
  * The platforms whose configuration a local-only run is dropping, so startup
  * can say which platforms will not be connectable in it. Empty for any other
- * run, and empty when a public origin makes the configuration usable as-is.
+ * run. A configured origin does not make it usable: local-only means the
+ * tunnel is not being served.
  */
 export function platformsWithSkippedConfig(
   env: Environment = process.env,
 ): TunnelDependentPlatform[] {
-  if (!isLocalOnly(env) || env.PUBLIC_BASE_URL) return [];
+  if (!isLocalOnlyRun(env)) return [];
   return TUNNEL_DEPENDENT_PLATFORMS.filter(
     (platform) => env[TUNNEL_DEPENDENT_CONFIG[platform].variable],
   );
 }
 
-// Drop what a local-only run cannot honour before validating, so the schema
-// itself stays strict — there is one set of rules, applied to an environment
-// this mode has already narrowed to what it can actually serve.
+// Drop the origin and callbacks a local-only run cannot honour before
+// validating, so the schema itself stays strict. The origin may still be in
+// .env, but this process deliberately is not serving it.
 function withoutSkippedConfig(env: Environment): Environment {
-  const skipped = platformsWithSkippedConfig(env);
-  if (skipped.length === 0) return env;
+  if (!isLocalOnlyRun(env)) return env;
 
   const narrowed = { ...env };
-  for (const platform of skipped) {
+  delete narrowed.PUBLIC_BASE_URL;
+  for (const platform of TUNNEL_DEPENDENT_PLATFORMS) {
     delete narrowed[TUNNEL_DEPENDENT_CONFIG[platform].variable];
   }
   return narrowed;

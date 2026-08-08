@@ -23,6 +23,7 @@ describe("InstagramAdapter", () => {
     writeFileSync(videoPath, "video bytes");
     process.env.DATABASE_URL = `file:${dbPath}`;
     process.env.PUBLIC_BASE_URL = "https://omnipost.test";
+    process.env.ACCESS_PASSWORD = "shared test password";
     process.env.INSTAGRAM_APP_ID = "instagram-app-id";
     process.env.INSTAGRAM_APP_SECRET = "instagram-app-secret";
     process.env.INSTAGRAM_REDIRECT_URI = "https://omnipost.test/api/platforms/instagram/callback";

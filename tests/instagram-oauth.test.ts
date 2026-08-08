@@ -56,6 +56,7 @@ describe("Instagram OAuth routes", () => {
     process.env.INSTAGRAM_APP_ID = "app-id";
     process.env.INSTAGRAM_APP_SECRET = "app-secret";
     process.env.PUBLIC_BASE_URL = "https://omnipost.test";
+    process.env.ACCESS_PASSWORD = "shared test password";
     process.env.INSTAGRAM_REDIRECT_URI =
       "https://omnipost.test/api/platforms/instagram/callback";
     process.env.TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString("base64");
