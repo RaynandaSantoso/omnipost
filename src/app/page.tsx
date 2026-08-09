@@ -142,11 +142,21 @@ function videoDurationIssue(candidate: File): Promise<string | null> {
 // Only meaningful once connectionsSettled(connections) is true: a platform
 // that has not answered yet is absent from the result, which would read as
 // "not a target" rather than "not known yet".
-export function uploadTargetPlatforms(connections: ConnectionsView): Platform[] {
+export function uploadTargetPlatforms(
+  connections: ConnectionsView,
+  selected?: ReadonlySet<ConnectablePlatform>,
+): Platform[] {
   const connected = CONNECTABLE_PLATFORMS.filter(
     (platform) => connectionOf(connections[platform])?.connected,
   );
-  return connected.length > 0 ? [...connected] : ["dry-run"];
+  if (connected.length === 0) return ["dry-run"];
+  return selected ? connected.filter((platform) => selected.has(platform)) : connected;
+}
+
+// Dry-run is the server's no-account fallback, never an operator-selected
+// destination. Omitting the field preserves that distinction at the API.
+export function platformsForUploadRequest(platforms: Platform[]): Platform[] | undefined {
+  return platforms.length === 1 && platforms[0] === "dry-run" ? undefined : platforms;
 }
 
 // Per-platform entry points into the shared status text. They exist so each
@@ -282,23 +292,51 @@ export function JobOutcome({
 
 export function OutboundTextPreview({
   platforms,
+  connectedPlatforms,
   title,
   description,
   hashtags = [],
   overrides = {},
+  onSelectionChange,
 }: {
   platforms: Platform[];
+  connectedPlatforms?: ConnectablePlatform[];
   title: string;
   description: string;
   hashtags?: string[];
   overrides?: PlatformTextOverrides;
+  onSelectionChange?: (platform: ConnectablePlatform, selected: boolean) => void;
 }) {
+  const previewPlatforms = connectedPlatforms ?? platforms;
   return (
     <section aria-label="Outbound text preview" className="flex flex-col gap-2">
       <p className="text-sm font-medium text-black dark:text-zinc-50">
         Outbound text preview
       </p>
-      {platforms.map((platform) => {
+      {previewPlatforms.map((platform) => {
+        const selected = platforms.includes(platform);
+        if (!selected) {
+          return (
+            <div
+              key={platform}
+              className="flex items-center justify-between rounded-md border border-zinc-200 px-3 py-2 text-sm opacity-50 dark:border-zinc-800"
+            >
+              <label className="flex cursor-pointer items-center gap-2">
+                {onSelectionChange ? (
+                  <input
+                    type="checkbox"
+                    checked={false}
+                    onChange={(event) => {
+                      if (platform !== "dry-run") onSelectionChange(platform, event.target.checked);
+                    }}
+                  />
+                ) : null}
+                <span className="font-medium text-black dark:text-zinc-50">{PLATFORM_LABEL[platform]}</span>
+              </label>
+              <span className="text-xs text-zinc-600 dark:text-zinc-400">Not selected</span>
+            </div>
+          );
+        }
         const override = overrides[platform];
         const resolved = resolveJobMetadata({
           platform,
@@ -329,9 +367,17 @@ export function OutboundTextPreview({
             }`}
           >
             <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
-              <span className="font-medium text-black dark:text-zinc-50">
+              <label className="flex cursor-pointer items-center gap-2 font-medium text-black dark:text-zinc-50">
+                {onSelectionChange && platform !== "dry-run" ? (
+                  <input
+                    type="checkbox"
+                    checked
+                    onClick={(event) => event.stopPropagation()}
+                    onChange={(event) => onSelectionChange(platform, event.target.checked)}
+                  />
+                ) : null}
                 {PLATFORM_LABEL[platform]}
-              </span>
+              </label>
               <span className="flex flex-wrap justify-end gap-x-3 text-xs text-zinc-600 dark:text-zinc-400">
                 {fields.map((field) => (
                   <span
@@ -814,6 +860,9 @@ export default function Home() {
   const [durationSeconds, setDurationSeconds] = useState<number | null>(null);
   const { history, addUpload, retryJob, saveJobMetadata } = useUploadActivity();
   const [connections, setConnections] = useState<ConnectionsView>(loadingConnections);
+  const [selectedPlatforms, setSelectedPlatforms] = useState<Set<ConnectablePlatform>>(
+    () => new Set(CONNECTABLE_PLATFORMS),
+  );
   const previewUrlRef = useRef<string | null>(null);
   // A file's verdict is re-derived whenever the target platforms change, so
   // two checks can be in flight at once (the duration probe is async). Only
@@ -912,7 +961,10 @@ export default function Home() {
       setCheckingFile(false);
     };
 
-    const formatIssue = fileFormatIssue(file, uploadTargetPlatforms(connections));
+    const formatIssue = fileFormatIssue(
+      file,
+      uploadTargetPlatforms(connections, selectedPlatforms),
+    );
     if (formatIssue) {
       settle(formatIssue);
       return;
@@ -932,7 +984,7 @@ export default function Home() {
       durationIssueRef.current = { file, issue };
       settle(issue);
     });
-  }, [file, connections]);
+  }, [file, connections, selectedPlatforms]);
 
   function sendUpload(body: FormData): Promise<UploadView> {
     return new Promise((resolve, reject) => {
@@ -972,13 +1024,14 @@ export default function Home() {
       || fileIssue
       || checkingFile
       || !connectionsSettled(connections)
+      || uploadTargetPlatforms(connections, selectedPlatforms).length === 0
       || submitLockRef.current
     ) {
       return;
     }
     const platformIssue = uploadPolicyViolation(
       file,
-      uploadTargetPlatforms(connections),
+      uploadTargetPlatforms(connections, selectedPlatforms),
     );
     if (platformIssue) {
       setFileIssue(`${platformIssue}.`);
@@ -998,8 +1051,15 @@ export default function Home() {
     if (hashtags.length > 0) {
       body.set("hashtags", JSON.stringify(hashtags));
     }
-    if (Object.keys(overrides).length > 0) {
-      body.set("overrides", JSON.stringify(overrides));
+    const targetOverrides = Object.fromEntries(
+      Object.entries(overrides).filter(([platform]) => targetPlatforms.includes(platform as Platform)),
+    );
+    if (Object.keys(targetOverrides).length > 0) {
+      body.set("overrides", JSON.stringify(targetOverrides));
+    }
+    const requestedPlatforms = platformsForUploadRequest(targetPlatforms);
+    if (requestedPlatforms) {
+      body.set("platforms", JSON.stringify(requestedPlatforms));
     }
 
     try {
@@ -1015,7 +1075,10 @@ export default function Home() {
   }
 
   const settled = connectionsSettled(connections);
-  const targetPlatforms = settled ? uploadTargetPlatforms(connections) : [];
+  const connectedPlatforms = settled
+    ? CONNECTABLE_PLATFORMS.filter((platform) => connectionOf(connections[platform])?.connected)
+    : [];
+  const targetPlatforms = settled ? uploadTargetPlatforms(connections, selectedPlatforms) : [];
   const hashtags = parseHashtagInput(hashtagInput);
 
   const compose = (
@@ -1079,10 +1142,19 @@ export default function Home() {
 
         <OutboundTextPreview
           platforms={targetPlatforms}
+          connectedPlatforms={connectedPlatforms}
           title={title}
           description={description}
           hashtags={hashtags}
           overrides={overrides}
+          onSelectionChange={(platform, selected) => {
+            setSelectedPlatforms((current) => {
+              const next = new Set(current);
+              if (selected) next.add(platform);
+              else next.delete(platform);
+              return next;
+            });
+          }}
         />
 
         {error ? <p className="text-sm text-red-600 dark:text-red-400">{error}</p> : null}
@@ -1097,7 +1169,7 @@ export default function Home() {
         ) : null}
         <button
           type="submit"
-          disabled={submitting || checkingFile || !file || Boolean(fileIssue) || title.trim().length === 0}
+          disabled={submitting || checkingFile || !file || Boolean(fileIssue) || title.trim().length === 0 || targetPlatforms.length === 0}
           className="rounded-md bg-black px-3 py-2 text-white disabled:opacity-50 dark:bg-zinc-50 dark:text-black"
         >
           {submitting ? "Uploading..." : "Upload"}

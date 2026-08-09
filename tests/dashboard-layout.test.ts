@@ -6,7 +6,13 @@ import {
   DashboardShell,
   VideoPicker,
 } from "@/components/dashboard-shell";
-import { OutboundTextPreview, UploadActivityList } from "@/app/page";
+import {
+  fileFormatIssue,
+  OutboundTextPreview,
+  platformsForUploadRequest,
+  uploadTargetPlatforms,
+  UploadActivityList,
+} from "@/app/page";
 import {
   connectionLoaded,
   connectionLoading,
@@ -130,6 +136,42 @@ describe("VideoPicker", () => {
 });
 
 describe("compact outbound preview", () => {
+  it("uses the selected connected platforms as the one target set for file policy", () => {
+    const connections: ConnectionsView = {
+      youtube: connectionLoaded(connected("Channel")),
+      tiktok: connectionLoaded(connected("TikTok")),
+      instagram: connectionLoaded(disconnected()),
+    };
+    const selected = new Set(["youtube"] as const);
+
+    expect(uploadTargetPlatforms(connections, selected)).toEqual(["youtube"]);
+    expect(fileFormatIssue(
+      { name: "large.mp4", type: "video/mp4", size: 80 * 1024 * 1024 },
+      uploadTargetPlatforms(connections, selected),
+    )).toBeNull();
+  });
+
+  it("omits the platform field for the no-account dry-run fallback", () => {
+    expect(platformsForUploadRequest(["dry-run"])).toBeUndefined();
+    expect(platformsForUploadRequest(["youtube"])).toEqual(["youtube"]);
+  });
+
+  it("keeps deselected connected platforms as dimmed selection stubs", () => {
+    const html = renderToStaticMarkup(createElement(OutboundTextPreview, {
+      platforms: ["youtube"],
+      connectedPlatforms: ["youtube", "tiktok"],
+      title: "YouTube only",
+      description: "",
+      onSelectionChange: () => {},
+    }));
+
+    expect(html).toContain('checked=""');
+    expect(html).toContain("TikTok");
+    expect(html).toContain("Not selected");
+    expect(html).toContain("opacity-50");
+    expect(html).not.toContain("Videos upload as private");
+  });
+
   it("summarizes usage, retains resolved text, and puts TikTok policy by its caption", () => {
     const html = renderToStaticMarkup(createElement(OutboundTextPreview, {
       platforms: ["youtube", "tiktok"],

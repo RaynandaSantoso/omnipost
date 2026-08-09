@@ -129,20 +129,31 @@ export async function POST(request: Request) {
     );
   }
 
-  const platformField = formData.get("platform");
-  let platform: Platform | undefined;
-  if (platformField !== null) {
-    if (typeof platformField !== "string") {
-      return NextResponse.json({ error: "platform must be a string" }, { status: 400 });
+  const platformsField = formData.get("platforms");
+  let platforms: Platform[] | undefined;
+  if (platformsField !== null) {
+    if (typeof platformsField !== "string") {
+      return NextResponse.json({ error: "platforms must be JSON text" }, { status: 400 });
     }
-    const parsed = platformSchema.safeParse(platformField);
+    let value: unknown;
+    try {
+      value = JSON.parse(platformsField);
+    } catch {
+      return NextResponse.json({ error: "platforms must be valid JSON" }, { status: 400 });
+    }
+    const parsed = z.array(platformSchema)
+      .min(1, "platforms must be a non-empty array of supported platforms")
+      .refine((items) => new Set(items).size === items.length, {
+        message: "platforms must not contain duplicates",
+      })
+      .safeParse(value);
     if (!parsed.success) {
       return NextResponse.json(
-        { error: `unsupported platform "${platformField}"` },
+        { error: parsed.error.issues[0]?.message ?? "platforms must be a non-empty array of supported platforms" },
         { status: 400 },
       );
     }
-    platform = parsed.data;
+    platforms = parsed.data;
   }
 
   const overrides = overridesFrom(formData);
@@ -153,7 +164,7 @@ export async function POST(request: Request) {
 
   try {
     const user = await ensureSeedUser();
-    const upload = await createUpload({ userId: user.id, title, description, file, platform, overrides, hashtags });
+    const upload = await createUpload({ userId: user.id, title, description, file, platforms, overrides, hashtags });
 
     return NextResponse.json(
       {

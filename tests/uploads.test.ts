@@ -10,6 +10,7 @@ function uploadRequest(fields: {
   title?: string;
   description?: string;
   platform?: string;
+  platforms?: string[];
   overrides?: unknown;
   hashtags?: unknown;
 }) {
@@ -23,8 +24,9 @@ function uploadRequest(fields: {
   if (fields.description !== undefined) {
     body.set("description", fields.description);
   }
-  if (fields.platform !== undefined) {
-    body.set("platform", fields.platform);
+  const platforms = fields.platforms ?? (fields.platform === undefined ? undefined : [fields.platform]);
+  if (platforms !== undefined) {
+    body.set("platforms", JSON.stringify(platforms));
   }
   if (fields.overrides !== undefined) {
     body.set("overrides", JSON.stringify(fields.overrides));
@@ -137,6 +139,75 @@ describe("POST /api/uploads", () => {
     expect(response.status).toBe(201);
     expect((await response.json()).jobs.map((job: { platform: string }) => job.platform).sort())
       .toEqual(["instagram", "tiktok", "youtube"]);
+  });
+
+  it("creates Jobs only for the connected platforms explicitly selected", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "YouTube only",
+      description: "A selected upload",
+      platforms: ["youtube"],
+    }));
+
+    expect(response.status).toBe(201);
+    expect((await response.json()).jobs.map((job: { platform: string }) => job.platform))
+      .toEqual(["youtube"]);
+  });
+
+  it("rejects an empty platform selection rather than falling back to dry-run", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "No destination",
+      description: "",
+      platforms: [],
+    }));
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain("non-empty array");
+  });
+
+  it("rejects duplicate platforms instead of creating duplicate Jobs", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "Duplicate target",
+      description: "",
+      platforms: ["youtube", "youtube"],
+    }));
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain("must not contain duplicates");
+  });
+
+  it("rejects a selected platform that has no connected account", async () => {
+    const { POST } = await import("@/app/api/uploads/route");
+    const { ensureSeedUser, prisma } = await import("@/lib/db");
+    const { encryptToken } = await import("@/lib/token-crypto");
+    const user = await ensureSeedUser();
+    await prisma.platformConnection.delete({
+      where: { userId_platform: { userId: user.id, platform: "tiktok" } },
+    });
+    const response = await POST(uploadRequest({
+      video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
+      title: "Missing connection",
+      description: "",
+      platforms: ["tiktok"],
+    }));
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain('platform "tiktok" is not connected');
+    await prisma.platformConnection.create({
+      data: {
+        userId: user.id,
+        platform: "tiktok",
+        accessTokenEncrypted: encryptToken("access"),
+        refreshTokenEncrypted: encryptToken("refresh"),
+        accessTokenExpiresAt: new Date(Date.now() + 60_000),
+        externalAccountId: "open-id-restored",
+      },
+    });
   });
 
   it("persists an override on its target Job without changing the shared Upload text", async () => {
@@ -313,7 +384,7 @@ describe("POST /api/uploads", () => {
       video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
       title: "T",
       description: "y".repeat(2_190),
-      platform: "instagram",
+      platforms: ["instagram"],
       hashtags: [],
       overrides: { instagram: { hashtags: ["overflow"] } },
     }));
@@ -347,7 +418,7 @@ describe("POST /api/uploads", () => {
       video: new File(["fake video bytes"], "clip.mp4", { type: "video/mp4" }),
       title: "Shared title",
       description: "Shared description",
-      platform: "instagram",
+      platforms: ["instagram"],
       overrides: {
         instagram: { title: "Finished caption", description: "Append me" },
       },
@@ -375,7 +446,7 @@ describe("POST /api/uploads", () => {
         title: "Large clip",
         description: "",
         file: oversizedFile,
-        platform: "tiktok",
+        platforms: ["tiktok"],
       }),
     ).rejects.toThrow("64 MB");
   });
@@ -394,19 +465,33 @@ describe("POST /api/uploads", () => {
     expect((await response.json()).error).toContain("does not match");
   });
 
-  it("keeps accepting an extensionless typed video for dry-run", async () => {
+  it("keeps accepting an extensionless typed video through the dry-run fallback", async () => {
     const { POST } = await import("@/app/api/uploads/route");
+    const { ensureSeedUser, prisma } = await import("@/lib/db");
+    const { encryptToken } = await import("@/lib/token-crypto");
+    await prisma.platformConnection.deleteMany();
     const response = await POST(
       uploadRequest({
         video: new File(["video bytes"], "clip", { type: "video/mp4" }),
         title: "My Short",
         description: "",
-        platform: "dry-run",
       }),
     );
 
     expect(response.status).toBe(201);
     expect((await response.json()).jobs[0].platform).toBe("dry-run");
+
+    const user = await ensureSeedUser();
+    await prisma.platformConnection.create({
+      data: {
+        userId: user.id,
+        platform: "instagram",
+        accessTokenEncrypted: encryptToken("access"),
+        refreshTokenEncrypted: encryptToken("refresh"),
+        accessTokenExpiresAt: new Date(Date.now() + 60_000),
+        externalAccountId: "ig-restored",
+      },
+    });
   });
 
   it("accepts Instagram as an explicit registered platform", async () => {
@@ -451,11 +536,11 @@ describe("POST /api/uploads", () => {
       title: "Large Reel",
       description: "",
       file: oversizedFile,
-      platform: "instagram",
+      platforms: ["instagram"],
     })).rejects.toThrow("1 GB");
   });
 
-  it("honors an explicit, registered platform instead of auto-selecting", async () => {
+  it("does not allow dry-run to be selected as a destination", async () => {
     const { POST } = await import("@/app/api/uploads/route");
 
     const response = await POST(uploadRequest({
@@ -465,8 +550,8 @@ describe("POST /api/uploads", () => {
       platform: "dry-run",
     }));
 
-    expect(response.status).toBe(201);
-    expect((await response.json()).jobs[0].platform).toBe("dry-run");
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain('platform "dry-run" is not connected');
   });
 
   it("rejects a request with no video file", async () => {

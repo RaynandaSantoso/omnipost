@@ -44,21 +44,36 @@ async function selectedPlatforms(userId: string): Promise<Platform[]> {
   return platforms.length > 0 ? platforms : ["dry-run"];
 }
 
+async function requestedPlatforms(userId: string, platforms: Platform[]): Promise<Platform[]> {
+  if (platforms.length === 0) {
+    throw new UploadValidationError("select at least one platform before uploading");
+  }
+
+  const connected = await selectedPlatforms(userId);
+  for (const platform of platforms) {
+    if (platform === "dry-run") {
+      throw new UploadValidationError("platform \"dry-run\" is not connected");
+    }
+    if (!connected.includes(platform)) {
+      throw new UploadValidationError(`platform "${platform}" is not connected`);
+    }
+  }
+  return platforms;
+}
+
 export async function createUpload(params: {
   userId: string;
   title: string;
   description: string;
   file: File;
-  platform?: Platform;
+  platforms?: Platform[];
   overrides?: PlatformTextOverrides;
   hashtags?: string[];
 }) {
   const { userId, title, description, file, hashtags = [] } = params;
-  // An explicit platform overrides auto-selection outright, including
-  // "youtube" with no connection — that isn't a privilege escalation (this
-  // app is single-tenant, and the resulting job just fails terminally with
-  // a clear "needs reconnecting" error, same as any other disconnect).
-  const platforms = params.platform ? [params.platform] : await selectedPlatforms(userId);
+  const platforms = params.platforms
+    ? await requestedPlatforms(userId, params.platforms)
+    : await selectedPlatforms(userId);
   const overrides = params.overrides ?? {};
   for (const [platform, override] of Object.entries(overrides) as [Platform, PlatformTextOverride][]) {
     if (!platforms.includes(platform)) {
