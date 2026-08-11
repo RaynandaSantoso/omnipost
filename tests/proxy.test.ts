@@ -32,7 +32,7 @@ describe("proxy access gate", () => {
 
   describe("with a password configured", () => {
     beforeEach(() => {
-      process.env.ACCESS_PASSWORD = "correct horse";
+      process.env.ACCESS_PASSWORD = "correct horse battery staple";
       resetConfigCache();
     });
 
@@ -95,7 +95,7 @@ describe("proxy access gate", () => {
 
     it("admits a request carrying a valid session and renews the cookie", async () => {
       const { proxy } = await import("@/proxy");
-      const token = createSessionToken("correct horse");
+      const token = createSessionToken("correct horse battery staple");
 
       const response = proxy(requestFor("/dashboard", token));
 

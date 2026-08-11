@@ -43,6 +43,17 @@ const TUNNEL_DEPENDENT_PLATFORMS = Object.keys(
   TUNNEL_DEPENDENT_CONFIG,
 ) as TunnelDependentPlatform[];
 
+/**
+ * The shortest ACCESS_PASSWORD the app will boot with, once one is set at all.
+ *
+ * The gate is a single shared password on an internet-reachable origin, and
+ * login backoff caps at 60s per source IP — which bounds one attacker's rate,
+ * not a distributed one's. Length is therefore the only thing standing between
+ * a public instance and someone else's publishing rights, so it is enforced
+ * rather than merely recommended in the README.
+ */
+export const MIN_ACCESS_PASSWORD_LENGTH = 16;
+
 const configFields = {
   DATABASE_URL: z
     .string({ message: "DATABASE_URL is required" })
@@ -55,10 +66,18 @@ const configFields = {
     .default("development"),
   // Optional shared-password access gate. Unset (or blank) means the app
   // runs open, which is the correct behaviour for a local-only install.
+  // A password that *is* set has to be long, because nothing else is
+  // defending it: see MIN_ACCESS_PASSWORD_LENGTH.
   ACCESS_PASSWORD: z
     .string()
     .optional()
-    .transform((value) => (value && value.length > 0 ? value : undefined)),
+    .transform((value) => (value && value.length > 0 ? value : undefined))
+    .refine(
+      (value) => value === undefined || value.length >= MIN_ACCESS_PASSWORD_LENGTH,
+      {
+        message: `ACCESS_PASSWORD must be at least ${MIN_ACCESS_PASSWORD_LENGTH} characters`,
+      },
+    ),
   // Job engine policy. Defaults are sensible for a single-user instance;
   // an operator tuning them against a stricter platform quota should not
   // have to edit code.

@@ -28,11 +28,11 @@ describe("POST /api/auth/login", () => {
   });
 
   it("issues a session cookie for the correct password", async () => {
-    process.env.ACCESS_PASSWORD = "correct horse";
+    process.env.ACCESS_PASSWORD = "correct horse battery staple";
     resetConfigCache();
     const { POST } = await import("@/app/api/auth/login/route");
 
-    const response = await POST(loginRequest("correct horse"));
+    const response = await POST(loginRequest("correct horse battery staple"));
 
     expect(response.status).toBe(200);
     const cookie = response.cookies.get("omnipost_session");
@@ -42,7 +42,7 @@ describe("POST /api/auth/login", () => {
   });
 
   it("rejects an incorrect password with 401 and no cookie", async () => {
-    process.env.ACCESS_PASSWORD = "correct horse";
+    process.env.ACCESS_PASSWORD = "correct horse battery staple";
     resetConfigCache();
     const { POST } = await import("@/app/api/auth/login/route");
 
@@ -53,7 +53,7 @@ describe("POST /api/auth/login", () => {
   });
 
   it("rate-limits repeated failed attempts from the same source", async () => {
-    process.env.ACCESS_PASSWORD = "correct horse";
+    process.env.ACCESS_PASSWORD = "correct horse battery staple";
     resetConfigCache();
     const { POST } = await import("@/app/api/auth/login/route");
 
@@ -65,18 +65,18 @@ describe("POST /api/auth/login", () => {
   });
 
   it("does not rate-limit a different source after one failure", async () => {
-    process.env.ACCESS_PASSWORD = "correct horse";
+    process.env.ACCESS_PASSWORD = "correct horse battery staple";
     resetConfigCache();
     const { POST } = await import("@/app/api/auth/login/route");
 
     await POST(loginRequest("wrong", "8.8.8.8"));
-    const otherSource = await POST(loginRequest("correct horse", "1.1.1.1"));
+    const otherSource = await POST(loginRequest("correct horse battery staple", "1.1.1.1"));
 
     expect(otherSource.status).toBe(200);
   });
 
   it("keys the rate limit on the last X-Forwarded-For hop, not a spoofable leading one", async () => {
-    process.env.ACCESS_PASSWORD = "correct horse";
+    process.env.ACCESS_PASSWORD = "correct horse battery staple";
     resetConfigCache();
     const { POST } = await import("@/app/api/auth/login/route");
 

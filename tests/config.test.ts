@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ConfigError,
   LOCAL_ONLY_ENV_VAR,
+  MIN_ACCESS_PASSWORD_LENGTH,
   loadConfig,
   platformsWithSkippedConfig,
 } from "@/lib/config";
@@ -40,6 +41,33 @@ describe("loadConfig", () => {
 
   it("permits a run without a public origin or access password", () => {
     expect(loadConfig({ DATABASE_URL: "file:./dev.db" }).ACCESS_PASSWORD).toBeUndefined();
+  });
+
+  it("refuses an access password shorter than the minimum", () => {
+    expect(() =>
+      loadConfig({
+        DATABASE_URL: "file:./dev.db",
+        ACCESS_PASSWORD: "x".repeat(MIN_ACCESS_PASSWORD_LENGTH - 1),
+      }),
+    ).toThrow(/ACCESS_PASSWORD/);
+  });
+
+  it("accepts an access password at exactly the minimum", () => {
+    const password = "x".repeat(MIN_ACCESS_PASSWORD_LENGTH);
+
+    expect(
+      loadConfig({ DATABASE_URL: "file:./dev.db", ACCESS_PASSWORD: password })
+        .ACCESS_PASSWORD,
+    ).toBe(password);
+  });
+
+  // The length floor applies only once a password is set: a blank value still
+  // means "no gate", which is how a local-only run is meant to work.
+  it("treats a blank access password as unset rather than too short", () => {
+    expect(
+      loadConfig({ DATABASE_URL: "file:./dev.db", ACCESS_PASSWORD: "" })
+        .ACCESS_PASSWORD,
+    ).toBeUndefined();
   });
 
   it.each([
