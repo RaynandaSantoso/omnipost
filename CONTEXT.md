@@ -47,6 +47,15 @@ Single-context repo. See `docs/adr/` for the decisions behind these terms.
   is owed the difference. Nothing that depends on which platforms are
   connected — which file size and format limits apply, above all — may be
   decided until every connectable platform has left the loading state.
+- **Target platform** — a Platform this Upload will actually fan out to:
+  connected *and* selected. Being connected is a fact about an account;
+  being targeted is an intention about one post, and the operator may hold
+  the first without the second. The distinction is load-bearing rather than
+  cosmetic — every rule phrased against "target platforms" (text limits,
+  file size and format policy, override validation) follows the selection,
+  so deselecting a platform withdraws its constraints along with its Job.
+  Selecting nothing is not an upload and is refused; it is not the same as
+  connecting nothing, which still falls back to `dry-run`.
 - **Upload** — one user-initiated publish action: the source video file,
   plus the shared title/description defaults for every platform it fans out
   to. A Job may override either value without changing these defaults.
@@ -114,14 +123,24 @@ Single-context repo. See `docs/adr/` for the decisions behind these terms.
   OmniPost through that origin cannot be connected in one, so their
   configuration is dropped rather than rejected, and named at startup. The
   strict rules still bind `npm run dev` and production, which is what keeps
-  the relaxation from ever reaching a deployment.
+  the relaxation from ever reaching a deployment. It is a way to *develop*
+  OmniPost, never a way to use it: the tunnel is a publish-time dependency
+  (Instagram fetches the video over the public media URL), not a
+  connect-time one, so a run without it is missing more than the ability to
+  link an account.
+- **Launcher** — how the operator starts OmniPost: one clickable thing that
+  brings up the production build, the tunnel, and a browser tab together.
+  It exists because the operator's machine is the host (`docs/adr/0004-…`),
+  which makes starting OmniPost a routine act rather than a development
+  one. Distinct from `npm run dev` on purpose — that is for changing
+  OmniPost, this is for using it.
 
 ## Where decisions live
 
 - `docs/prd/` — what's being built and why, one file per shipped
   increment (or, for `roadmap.md`, the living index across increments).
-  Only the v0.1 PRD is tracked in git, as the record of the walking
-  skeleton; the rest are local working documents, because their durable
-  decisions land here, in `docs/adr/`, and in the issues they produce.
+  None of it is tracked in git: PRDs are local working documents, because
+  their durable decisions land here, in `docs/adr/`, and in the issues
+  they produce. Expect this directory to be absent in a fresh clone.
 - `docs/adr/` — architectural decisions that outlive any single PRD
   (hosting, schema shape, cross-platform constraints).
