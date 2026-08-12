@@ -1,9 +1,27 @@
+// The daily-use production Launcher: one command that owns the whole OmniPost
+// runtime — the production app, the reserved ngrok tunnel, and idle-sleep
+// prevention — as a single session (ADR-0004).
+//
+// The order below is the point. Preflight validates every prerequisite while
+// nothing is running (scripts/launcher/preflight.mjs), the app is started and
+// health-checked before the public tunnel exists, and the browser opens only
+// once the app answers and every required process is still alive. If any step
+// fails, everything already started is stopped, so the operator never sees a
+// public entry point in front of an app that is not there.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import path from "node:path";
+import { readFileSync } from "node:fs";
+
+import { launchOrigin, preflight } from "./launcher/preflight.mjs";
 
 const DEFAULT_APP_URL = "http://localhost:3000";
 const DEFAULT_READY_TIMEOUT_MS = 120_000;
+const HEALTH_POLL_INTERVAL_MS = 250;
+// How long a companion process must survive before it counts as started. ngrok
+// fails by exiting immediately (an unauthenticated agent, a domain already
+// claimed), and that must be caught before the browser opens. A process that
+// dies after this window still ends the session — it just does so after the
+// tab is open, because liveness is all this session can ask of a tunnel.
+const COMPANION_SETTLE_MS = 500;
 
 function readEnvFile(path) {
   try {
@@ -33,71 +51,6 @@ const fileEnv = {
 };
 const envValue = (name) => process.env[name] ?? fileEnv[name];
 
-function launchSettings(appUrl) {
-  if (!['http:', 'https:'].includes(appUrl.protocol) || appUrl.pathname !== "/") {
-    throw new Error("OMNIPOST_LAUNCH_URL must be an HTTP origin without a path.");
-  }
-
-  const publicBaseUrl = envValue("PUBLIC_BASE_URL");
-  if (!publicBaseUrl) {
-    throw new Error("PUBLIC_BASE_URL is required by the OmniPost Launcher.");
-  }
-  if (!envValue("ACCESS_PASSWORD")) {
-    throw new Error("ACCESS_PASSWORD is required when PUBLIC_BASE_URL is configured.");
-  }
-
-  let publicOrigin;
-  try {
-    publicOrigin = new URL(publicBaseUrl);
-  } catch {
-    throw new Error("PUBLIC_BASE_URL must be a valid URL.");
-  }
-  if (
-    publicOrigin.protocol !== "https:" ||
-    publicOrigin.pathname !== "/" ||
-    publicOrigin.search ||
-    publicOrigin.hash ||
-    publicBaseUrl.includes("?") ||
-    publicBaseUrl.includes("#") ||
-    publicOrigin.username ||
-    publicOrigin.password
-  ) {
-    throw new Error(
-      "PUBLIC_BASE_URL must be an HTTPS origin without a path, query, fragment, or credentials.",
-    );
-  }
-
-  const redirects = [
-    ["TIKTOK_REDIRECT_URI", "/api/platforms/tiktok/callback"],
-    ["INSTAGRAM_REDIRECT_URI", "/api/platforms/instagram/callback"],
-  ];
-  for (const [name, callbackPath] of redirects) {
-    const redirectUri = envValue(name);
-    if (!redirectUri) continue;
-    let redirect;
-    try {
-      redirect = new URL(redirectUri);
-    } catch {
-      throw new Error(`${name} must be a valid URL.`);
-    }
-    if (
-      redirect.origin !== publicOrigin.origin ||
-      redirect.pathname !== callbackPath ||
-      redirect.search ||
-      redirect.hash ||
-      redirectUri.includes("?") ||
-      redirectUri.includes("#") ||
-      redirect.username ||
-      redirect.password
-    ) {
-      throw new Error(`${name} must use PUBLIC_BASE_URL and end exactly in ${callbackPath}.`);
-    }
-  }
-
-  const port = appUrl.port || (appUrl.protocol === "https:" ? "443" : "80");
-  return { appUrl, port, publicOrigin };
-}
-
 async function appAnswers(appUrl) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 750);
@@ -113,6 +66,14 @@ async function appAnswers(appUrl) {
     clearTimeout(timeout);
   }
 }
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const managed = [];
+let stopping = false;
+let ready = false;
 
 function spawnCommand(command, args) {
   return spawn(command, args, {
@@ -131,13 +92,59 @@ function signalTree(child, signal) {
   }
 }
 
+function stop(signal = "SIGTERM") {
+  if (stopping) return;
+  stopping = true;
+  for (const { child } of managed) signalTree(child, signal);
+}
+
+function fail(message) {
+  if (!stopping) console.error(message);
+  process.exitCode = 1;
+  stop();
+}
+
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => stop(signal));
+}
+
+/**
+ * Start a process this session owns. A required process that exits on its own
+ * ends the whole session: OmniPost does not run in a partly working shape.
+ */
+function startManaged(name, command, args) {
+  const child = spawnCommand(command, args);
+  const record = { name, child, exited: false };
+  managed.push(record);
+  child.on("error", (error) => {
+    record.exited = true;
+    fail(`Could not start ${name}: ${error.message}`);
+  });
+  child.on("exit", () => {
+    record.exited = true;
+    const index = managed.indexOf(record);
+    if (index >= 0) managed.splice(index, 1);
+    if (stopping) return;
+    fail(
+      ready
+        ? `${name} exited, so OmniPost is stopping the rest of this session.`
+        : `${name} exited before OmniPost was ready.`,
+    );
+  });
+  return record;
+}
+
+/** Run a one-shot command to completion, rejecting on a non-zero exit. */
 async function commandResult(command, args) {
   const child = spawnCommand(command, args);
-  activeChildren.push(child);
+  const record = { name: `${command} ${args.join(" ")}`, child, exited: false };
+  managed.push(record);
   return new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("exit", (code, signal) => {
-      activeChildren.splice(activeChildren.indexOf(child), 1);
+      record.exited = true;
+      const index = managed.indexOf(record);
+      if (index >= 0) managed.splice(index, 1);
       if (code === 0) resolve();
       else reject(new Error(`${command} ${args.join(" ")} exited with ${code ?? signal}`));
     });
@@ -148,128 +155,89 @@ async function openBrowser(appUrl) {
   await commandResult("open", [appUrl.href]);
 }
 
-const activeChildren = [];
-let stopping = false;
-
-function stop(signal = "SIGTERM") {
-  if (stopping) return;
-  stopping = true;
-  for (const child of activeChildren) signalTree(child, signal);
-}
-
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => stop(signal));
-}
-
-async function openWhenReady(appUrl) {
+async function waitForHealth(appUrl) {
   const configuredTimeout = Number(envValue("OMNIPOST_LAUNCH_TIMEOUT_MS"));
-  const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
-    ? configuredTimeout
-    : DEFAULT_READY_TIMEOUT_MS;
+  const timeoutMs =
+    Number.isFinite(configuredTimeout) && configuredTimeout > 0
+      ? configuredTimeout
+      : DEFAULT_READY_TIMEOUT_MS;
   const deadline = Date.now() + timeoutMs;
   while (!stopping && Date.now() < deadline) {
-    if (await appAnswers(appUrl)) {
-      await openBrowser(appUrl);
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (await appAnswers(appUrl)) return true;
+    await delay(HEALTH_POLL_INTERVAL_MS);
   }
   if (!stopping) {
-    console.error(`OmniPost did not answer at ${appUrl.href} within ${timeoutMs}ms.`);
-    process.exitCode = 1;
-    stop();
+    fail(`OmniPost did not answer at ${appUrl.href} within ${timeoutMs}ms.`);
   }
+  return false;
+}
+
+/** Wait out the settle window, so a companion that dies at once is caught. */
+async function stayedAlive(record) {
+  const deadline = Date.now() + COMPANION_SETTLE_MS;
+  while (Date.now() < deadline) {
+    if (stopping || record.exited) return false;
+    await delay(25);
+  }
+  return !stopping && !record.exited;
 }
 
 async function main() {
-  const appUrlValue = envValue("OMNIPOST_LAUNCH_URL") || DEFAULT_APP_URL;
-  let probeUrl;
-  try {
-    probeUrl = new URL(appUrlValue);
-  } catch {
-    throw new Error("OMNIPOST_LAUNCH_URL must be a valid HTTP URL.");
-  }
+  const appUrl = launchOrigin(envValue("OMNIPOST_LAUNCH_URL") || DEFAULT_APP_URL);
 
-  if (await appAnswers(probeUrl)) {
-    await openBrowser(probeUrl);
+  // A second launch against a session that is already answering is just a
+  // request to come back to the dashboard.
+  if (await appAnswers(appUrl)) {
+    await openBrowser(appUrl);
     return;
   }
 
-  const { appUrl, port, publicOrigin } = launchSettings(probeUrl);
-  const sleepInhibitor = {
-    name: "Idle-sleep inhibitor",
-    command: "caffeinate",
-    args: ["-i"],
-  };
-  const inhibitor = spawnCommand(sleepInhibitor.command, sleepInhibitor.args);
-  activeChildren.push(inhibitor);
-  inhibitor.on("error", (error) => {
-    console.error(`Could not start ${sleepInhibitor.name}: ${error.message}`);
-    process.exitCode = 1;
-    stop();
-  });
-  inhibitor.on("exit", (code, signal) => {
-    const index = activeChildren.indexOf(inhibitor);
-    if (index >= 0) activeChildren.splice(index, 1);
-    if (!stopping) {
-      process.exitCode = code ?? (signal ? 1 : 0);
-      stop();
-    }
+  const { port, publicOrigin, buildReady } = await preflight({
+    env: envValue,
+    cwd: process.cwd(),
+    appUrl,
   });
 
+  console.log("Starting OmniPost:");
+  console.log(`- OmniPost: ${appUrl.href}`);
+  console.log(`- Reserved public tunnel: ${publicOrigin.origin}`);
+  console.log("This Mac will stay awake while OmniPost is running.");
+  console.log("Press Ctrl+C to stop every service.");
+
+  // Held first, so neither a long build nor a health wait is interrupted by
+  // idle sleep. It is released on every way out of this session.
+  startManaged("Idle-sleep inhibitor", "caffeinate", ["-i"]);
+
   const rebuildRequested = process.argv.includes("--rebuild");
-  const hasProductionBuild = existsSync(path.join(".next", "BUILD_ID"));
-  if (rebuildRequested || !hasProductionBuild) {
-    console.log(rebuildRequested ? "Rebuilding OmniPost for production..." : "Building OmniPost for production...");
+  if (rebuildRequested || !buildReady) {
+    console.log(
+      rebuildRequested
+        ? "Rebuilding OmniPost for production..."
+        : "Building OmniPost for production...",
+    );
     await commandResult("next", ["build"]);
   } else {
     console.log("Using the existing production build. Pass --rebuild after changing code.");
   }
   if (stopping) return;
 
-  const services = [
-    {
-      name: "OmniPost",
-      command: "next",
-      args: ["start", "-p", port],
-      message: appUrl.href,
-    },
-    {
-      name: "Shared public tunnel",
-      command: "ngrok",
-      args: ["http", `--url=${publicOrigin.hostname}`, port],
-      message: publicOrigin.origin,
-    },
-  ];
+  console.log("Waiting for OmniPost to answer its health endpoint...");
+  startManaged("OmniPost", "next", ["start", "-p", port]);
+  if (!(await waitForHealth(appUrl))) return;
 
-  console.log("Starting OmniPost production services:");
-  for (const service of services) console.log(`- ${service.name}: ${service.message}`);
-  console.log("This Mac will stay awake while OmniPost is running.");
-  console.log("Press Ctrl+C to stop every service.");
+  console.log(`Opening the reserved public tunnel at ${publicOrigin.origin}...`);
+  const tunnel = startManaged("Reserved public tunnel", "ngrok", [
+    "http",
+    `--url=${publicOrigin.hostname}`,
+    port,
+  ]);
+  if (!(await stayedAlive(tunnel))) return;
 
-  for (const service of services) {
-    const child = spawnCommand(service.command, service.args);
-    activeChildren.push(child);
-    child.on("error", (error) => {
-      console.error(`Could not start ${service.name}: ${error.message}`);
-      process.exitCode = 1;
-      stop();
-    });
-    child.on("exit", (code, signal) => {
-      const index = activeChildren.indexOf(child);
-      if (index >= 0) activeChildren.splice(index, 1);
-      if (!stopping) {
-        process.exitCode = code ?? (signal ? 1 : 0);
-        stop();
-      }
-    });
-  }
-
-  await openWhenReady(appUrl);
+  ready = true;
+  console.log("OmniPost is ready.");
+  await openBrowser(appUrl);
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-  stop();
+  fail(error instanceof Error ? error.message : String(error));
 });

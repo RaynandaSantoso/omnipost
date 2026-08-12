@@ -51,11 +51,23 @@ keep `npm run dev` running until Instagram finishes processing the video.
 Install and authenticate ngrok, then configure `PUBLIC_BASE_URL` and
 `ACCESS_PASSWORD` in `.env`. Double-click
 `OmniPost.app`, or drag that app to the Dock without moving it out of
-the repository. The Launcher opens a Terminal-owned production session,
-builds OmniPost when no production build exists, starts the app and reserved
-tunnel, prevents idle sleep, and opens a browser tab after the health endpoint
-answers. Keep the Terminal window open for logs; press `Ctrl+C` there to stop
-the app and tunnel together.
+the repository. The Launcher opens a Terminal-owned production session.
+Keep the Terminal window open for logs; press `Ctrl+C` there to stop the app
+and tunnel together.
+
+Before starting anything, the Launcher checks the whole session: the public
+origin and its access password, the platform callback URLs, the `next`,
+`ngrok`, `caffeinate` and `open` commands, a writable per-user runtime location
+(`~/Library/Application Support/OmniPost`, overridable with
+`OMNIPOST_RUNTIME_DIR`), and whether the local port is free. A failed check
+names the prerequisite and starts no app, tunnel, or sleep inhibitor.
+
+Once the checks pass it holds off idle sleep, builds OmniPost when no usable
+production build exists, starts the app, and waits for its health endpoint. The
+reserved tunnel comes up only after the app answers — so a public URL never
+points at an app that is not there — and the browser tab opens last. If the
+health wait times out or a companion process fails to start, everything already
+started is stopped and the command exits non-zero.
 
 Launching it again while OmniPost is answering only brings its browser tab
 forward. The same production session can be started from a terminal with

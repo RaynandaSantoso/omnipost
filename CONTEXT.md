@@ -134,6 +134,12 @@ Single-context repo. See `docs/adr/` for the decisions behind these terms.
   which makes starting OmniPost a routine act rather than a development
   one. Distinct from `npm run dev` on purpose — that is for changing
   OmniPost, this is for using it.
+- **Preflight** — the checks the Launcher runs before it starts anything:
+  configuration, required commands, writable per-user runtime storage, a free
+  local port, and a usable production build. It is a phase rather than a
+  helper because the failure it prevents is a *misleading* one — a public
+  tunnel answering in front of an app that refused to boot. Everything it
+  reports is therefore known while nothing is running.
 
 ## Where decisions live
 
