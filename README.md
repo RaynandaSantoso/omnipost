@@ -106,8 +106,12 @@ Running is never assumed from a leftover file or from something answering on
 the port: it means the recorded supervising process is still that same process
 *and* OmniPost still answers. Ownership lives in `session.json` under the
 runtime location, written atomically and readable only by you. A session that
-crashed leaves its record behind so the next `status` can explain it, and the
-next launch clears it — a crash never locks you out.
+crashed leaves its record and the exact operating-system identity of each owned
+process group behind so the next `status` can explain it. The next launch first
+asks only those verified groups to stop, waits for their bounded cleanup, and
+then replaces stale or malformed ownership. It never searches by command name
+or trusts a reused process identifier. A survivor keeps the session Failed with
+an actionable diagnostic instead of being hidden behind Stopped.
 
 Launcher, build, app, tunnel, browser-opening, and idle-sleep-inhibitor output
 is timestamped and source-labeled. Known passwords, OAuth client secrets, and
@@ -133,9 +137,15 @@ If the graceful wait expires, choose **Keep Waiting** or deliberately confirm
 **Force Stop**; interrupted work recovers through its existing Lease and
 Transfer state. **Quit** first stops the complete runtime and exits only after
 cleanup. Cancelling a quit or timeout dialog keeps the menu-bar owner available.
-Closing the browser does not stop OmniPost. The terminal Launcher commands
-above remain available for scripting, and `npm run dev` and `npm run dev:app`
-remain independent development entry points.
+macOS application termination, logout, and shutdown enter the same bounded
+cleanup path without showing an interaction-blocking confirmation dialog. If
+that system-requested grace period expires, the Launcher force stops its
+verified owned process groups so logout or shutdown can complete; interrupted
+Jobs recover through their Lease and Transfer state.
+Closing the browser tab does not stop OmniPost; use Stop or Quit. The terminal
+Launcher commands above remain available for scripting, `npm run dev` and
+`npm run dev:app` remain independent development entry points, and Docker
+self-hosting remains the separate container workflow described above.
 
 ## Local development (without Docker)
 

@@ -31,11 +31,19 @@ final class OmniPostLauncher: NSObject, NSApplicationDelegate {
     private var bufferedOutput = Data()
     private var refreshTimer: Timer?
     private var quitApproved = false
+    private var terminationRequested = false
+    private var reconnectWorkItem: DispatchWorkItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         configureMenu()
         startBridge()
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(workspaceWillPowerOff),
+            name: NSWorkspace.willPowerOffNotification,
+            object: nil
+        )
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -75,7 +83,7 @@ final class OmniPostLauncher: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 
-    private func startBridge() {
+    private func startBridge(recovering: Bool = false) {
         let projectDirectory = URL(fileURLWithPath: CommandLine.arguments[1]).standardizedFileURL.path
         let nodeExecutable = CommandLine.arguments[2]
         let task = Process()
@@ -92,7 +100,7 @@ final class OmniPostLauncher: NSObject, NSApplicationDelegate {
         }
         task.terminationHandler = { [weak self] _ in
             DispatchQueue.main.async {
-                self?.showFailure("The Launcher connection ended. Reopen OmniPost to try again.")
+                self?.bridgeEndedUnexpectedly()
             }
         }
 
@@ -100,13 +108,24 @@ final class OmniPostLauncher: NSObject, NSApplicationDelegate {
             try task.run()
             bridge = task
             bridgeInput = input.fileHandleForWriting
-            send("activate")
+            send(recovering ? "recover" : "activate")
             refreshTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 self?.send("status")
             }
         } catch {
             showFailure("Could not start the Launcher: \(error.localizedDescription)")
         }
+    }
+
+    private func bridgeEndedUnexpectedly() {
+        guard !quitApproved && !terminationRequested else { return }
+        bridge = nil
+        bridgeInput = nil
+        refreshTimer?.invalidate()
+        showFailure("The Launcher connection ended. Reconnecting to recover the session…")
+        let workItem = DispatchWorkItem { [weak self] in self?.startBridge(recovering: true) }
+        reconnectWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: workItem)
     }
 
     private func receive(_ data: Data) {
@@ -127,6 +146,9 @@ final class OmniPostLauncher: NSObject, NSApplicationDelegate {
     private func apply(_ message: BridgeMessage) {
         switch message.type {
         case "state":
+            if terminationRequested && message.state == "failed" {
+                terminationRequested = false
+            }
             stateItem.title = "OmniPost: \(message.label ?? "Unknown")"
             detailItem.title = message.detail ?? ""
             openItem.isEnabled = message.openEnabled ?? false
@@ -180,6 +202,15 @@ final class OmniPostLauncher: NSObject, NSApplicationDelegate {
     @objc private func stopOmniPost() { send("stop") }
     @objc private func restartOmniPost() { send("restart") }
 
+    @objc private func workspaceWillPowerOff() { requestTerminationCleanup() }
+
+    private func requestTerminationCleanup() {
+        guard !terminationRequested else { return }
+        terminationRequested = true
+        reconnectWorkItem?.cancel()
+        send("terminate")
+    }
+
     @objc private func requestQuit() {
         let alert = NSAlert()
         alert.messageText = "Quit OmniPost?"
@@ -218,7 +249,7 @@ final class OmniPostLauncher: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if quitApproved { return .terminateNow }
-        requestQuit()
+        requestTerminationCleanup()
         return .terminateCancel
     }
 }

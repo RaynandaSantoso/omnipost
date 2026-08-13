@@ -85,6 +85,25 @@ describe("menu-bar Launcher adapter", () => {
     ]);
   });
 
+  it("recovers an interrupted Failed session when a replacement bridge connects", async () => {
+    const launcher = lifecycle(status("failed", { failure: "The supervisor crashed." }));
+    const messages: unknown[] = [];
+    const controller = createMenuBarController({
+      launcher,
+      env: () => undefined,
+      cwd: "/project",
+      emit: (message: unknown) => messages.push(message),
+    });
+
+    await controller.dispatch("recover");
+
+    expect(launcher.start).toHaveBeenCalledOnce();
+    expect(messages).toContainEqual(
+      expect.objectContaining({ state: "starting", detail: "Recovering the interrupted session" }),
+    );
+    expect(messages.at(-1)).toEqual(expect.objectContaining({ state: "running" }));
+  });
+
   it("opens the existing session when the application is opened while Running", async () => {
     const launcher = lifecycle(status("running", { appUrl: "http://localhost:3000" }));
     const controller = createMenuBarController({
@@ -297,6 +316,114 @@ describe("menu-bar Launcher adapter", () => {
     expect(messages.at(-1)).toEqual({ type: "quitReady" });
   });
 
+  it.each(["starting", "running", "stopping", "failed"] as const)(
+    "joins bounded cleanup when macOS terminates a %s session",
+    async (stateName) => {
+      const launcher = lifecycle(status(stateName));
+      const messages: unknown[] = [];
+      const controller = createMenuBarController({
+        launcher,
+        env: () => undefined,
+        cwd: "/project",
+        emit: (message: unknown) => messages.push(message),
+      });
+
+      await controller.dispatch("terminate");
+
+      expect(launcher.stopSession).toHaveBeenCalledWith(
+        expect.objectContaining({ keepWaiting: false, force: false }),
+      );
+      expect(messages).toContainEqual(expect.objectContaining({ state: "stopping" }));
+      expect(messages.at(-1)).toEqual({ type: "quitReady" });
+    },
+  );
+
+  it("treats repeated macOS termination after cleanup as idempotent", async () => {
+    const launcher = lifecycle(status("running"));
+    const messages: unknown[] = [];
+    const controller = createMenuBarController({
+      launcher,
+      env: () => undefined,
+      cwd: "/project",
+      emit: (message: unknown) => messages.push(message),
+    });
+
+    await controller.dispatch("terminate");
+    launcher.status.mockResolvedValue(status("stopped"));
+    await controller.dispatch("terminate");
+
+    expect(launcher.stopSession).toHaveBeenCalledTimes(1);
+    expect(messages.filter((message) => JSON.stringify(message) === '{"type":"quitReady"}'))
+      .toHaveLength(2);
+  });
+
+  it("force stops automatically after bounded macOS termination cleanup times out", async () => {
+    const launcher = lifecycle(status("running"));
+    launcher.stopSession
+      .mockResolvedValueOnce(status("stopping", { timedOut: true }))
+      .mockResolvedValueOnce(status("stopped"));
+    const messages: unknown[] = [];
+    const controller = createMenuBarController({
+      launcher,
+      env: () => undefined,
+      cwd: "/project",
+      emit: (message: unknown) => messages.push(message),
+    });
+
+    await controller.dispatch("terminate");
+
+    expect(launcher.stopSession).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ keepWaiting: false, force: true }),
+    );
+    expect(messages).not.toContainEqual(expect.objectContaining({ type: "stopTimedOut" }));
+    expect(messages.at(-1)).toEqual({ type: "quitReady" });
+  });
+
+  it("does not approve macOS termination when verified cleanup fails", async () => {
+    const launcher = lifecycle(status("running"));
+    launcher.stopSession.mockResolvedValue(
+      status("failed", { failure: "A verified owned process did not exit." }),
+    );
+    const messages: unknown[] = [];
+    const controller = createMenuBarController({
+      launcher,
+      env: () => undefined,
+      cwd: "/project",
+      emit: (message: unknown) => messages.push(message),
+    });
+
+    await controller.dispatch("terminate");
+
+    expect(messages.at(-1)).toEqual(
+      expect.objectContaining({ state: "failed", detail: "A verified owned process did not exit." }),
+    );
+    expect(messages).not.toContainEqual({ type: "quitReady" });
+  });
+
+  it("presents Failed when force cleanup also exceeds its bound", async () => {
+    const launcher = lifecycle(status("running"));
+    launcher.stopSession
+      .mockResolvedValueOnce(status("stopping", { timedOut: true }))
+      .mockResolvedValueOnce(
+        status("failed", { failure: "Force Stop could not verify cleanup." }),
+      );
+    const messages: unknown[] = [];
+    const controller = createMenuBarController({
+      launcher,
+      env: () => undefined,
+      cwd: "/project",
+      emit: (message: unknown) => messages.push(message),
+    });
+
+    await controller.dispatch("terminate");
+
+    expect(messages.at(-1)).toEqual(
+      expect.objectContaining({ state: "failed", detail: "Force Stop could not verify cleanup." }),
+    );
+    expect(messages).not.toContainEqual({ type: "quitReady" });
+  });
+
   it("does not abandon a still-owned Failed session when quitting", async () => {
     const launcher = lifecycle(status("failed", { failure: "The tunnel exited" }));
     const messages: unknown[] = [];
@@ -361,7 +488,7 @@ describe("menu-bar Launcher adapter", () => {
     await controller.dispatch("activate");
     await controller.dispatch("viewLogs");
 
-    expect(launcher.start).not.toHaveBeenCalled();
+    expect(launcher.start).toHaveBeenCalledOnce();
     expect(messages).toContainEqual(
       expect.objectContaining({ state: "failed", detail: "Production startup failed safely" }),
     );
@@ -401,5 +528,9 @@ describe("menu-bar Launcher adapter", () => {
     expect(source).toContain('NSMenuItem(title: "Restart"');
     expect(source).toContain('NSMenuItem(title: "Quit"');
     expect(source).toContain("applicationShouldTerminate");
+    expect(source).toContain("NSWorkspace.willPowerOffNotification");
+    expect(source).toContain('send("terminate")');
+    expect(source).toContain("bridgeEndedUnexpectedly");
+    expect(source).toContain("Reconnecting to recover the session");
   });
 });

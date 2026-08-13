@@ -14,6 +14,7 @@
 // takes over the port, or one that inherits a recycled process id, is not this
 // session and is never treated as one.
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 
 import { LauncherError } from "./errors.mjs";
 import { launchOrigin, preflight } from "./preflight.mjs";
@@ -21,6 +22,8 @@ import { createRedactor, createSessionLog, readSessionLog } from "./session-log.
 import {
   claimOwnership,
   ownerAlive,
+  processIdentity,
+  processIdentityAlive,
   readOwnership,
   releaseOwnership,
   removeOwnership,
@@ -42,6 +45,9 @@ const FORCE_STOP_SIGNAL = "SIGUSR2";
 // A losing claim means another launch got there first, and re-reading tells us
 // which one; a handful of attempts is enough for that to settle.
 const OWNERSHIP_ATTEMPTS = 3;
+const SUPERVISOR_PROCESS_TOKEN = process.env.OMNIPOST_LAUNCHER_PROCESS_ID ?? randomUUID();
+process.env.OMNIPOST_LAUNCHER_PROCESS_ID = SUPERVISOR_PROCESS_TOKEN;
+process.title = `OmniPost-Launcher-${SUPERVISOR_PROCESS_TOKEN}`;
 
 async function appAnswers(appUrl) {
   const controller = new AbortController();
@@ -73,10 +79,14 @@ let shutdownPromise = null;
 let shutdownProcesses = [];
 
 function spawnCommand(command, args) {
-  return spawn(command, args, {
+  const processToken = randomUUID();
+  const child = spawn(command, args, {
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
+    env: { ...process.env, OMNIPOST_LAUNCHER_PROCESS_ID: processToken },
   });
+  child.launcherProcessToken = processToken;
+  return child;
 }
 
 function spawnLogged(name, command, args) {
@@ -87,19 +97,55 @@ function spawnLogged(name, command, args) {
   return child;
 }
 
+function recordManagedProcesses() {
+  if (!session || stopping) return;
+  session.record = updateOwnership(session.env, session.record, {
+    managedProcesses: managed
+      .map(({ name, child }) => {
+        const identity = processIdentity(child.pid, child.launcherProcessToken);
+        return identity ? { name, ...identity } : null;
+      })
+      .filter(Boolean),
+  });
+}
+
 function supervisor(stream, text) {
   session?.logger?.write("Supervisor", stream, text);
   (stream === "stderr" ? console.error : console.log)(session?.logger?.redact(text) ?? text);
 }
 
-function signalTree(child, signal) {
-  if (!child.pid) return;
+function signalProcessGroup(pid, signal) {
+  if (!pid) return;
   try {
-    if (process.platform !== "win32") process.kill(-child.pid, signal);
-    else child.kill(signal);
+    process.kill(process.platform === "win32" ? pid : -pid, signal);
   } catch (error) {
     if (error?.code !== "ESRCH") throw error;
   }
+}
+
+function signalTree(child, signal) {
+  signalProcessGroup(child.pid, signal);
+}
+
+function recordedGroupAlive(managedProcess) {
+  try {
+    process.kill(process.platform === "win32" ? managedProcess.pid : -managedProcess.pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+function registerManaged(managedProcess) {
+  managed.push(managedProcess);
+  recordManagedProcesses();
+}
+
+function unregisterManaged(managedProcess) {
+  const index = managed.indexOf(managedProcess);
+  if (index >= 0) managed.splice(index, 1);
+  recordManagedProcesses();
 }
 
 /**
@@ -227,15 +273,14 @@ process.on("exit", releaseSession);
 function startManaged(name, command, args) {
   const child = spawnLogged(name, command, args);
   const managedProcess = { name, child, exited: false };
-  managed.push(managedProcess);
+  registerManaged(managedProcess);
   child.on("error", (error) => {
     managedProcess.exited = true;
     fail(`Could not start ${name}: ${error.message}`);
   });
   child.on("exit", () => {
     managedProcess.exited = true;
-    const index = managed.indexOf(managedProcess);
-    if (index >= 0) managed.splice(index, 1);
+    unregisterManaged(managedProcess);
     if (stopping) return;
     fail(
       ready
@@ -250,13 +295,12 @@ function startManaged(name, command, args) {
 async function commandResult(command, args, name = `${command} ${args.join(" ")}`) {
   const child = spawnLogged(name, command, args);
   const managedProcess = { name, child, exited: false };
-  managed.push(managedProcess);
+  registerManaged(managedProcess);
   return new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("exit", (code, signal) => {
       managedProcess.exited = true;
-      const index = managed.indexOf(managedProcess);
-      if (index >= 0) managed.splice(index, 1);
+      unregisterManaged(managedProcess);
       if (code === 0) resolve();
       else reject(new Error(`${command} ${args.join(" ")} exited with ${code ?? signal}`));
     });
@@ -434,6 +478,17 @@ export async function stopSession({ env, keepWaiting = false, force = false }) {
   if (forcePermission === "released") {
     return sessionSummary(record, { state: "stopped", alreadyStopped: false });
   }
+  if (force) {
+    const failure =
+      "Force Stop could not verify that every owned process exited. " +
+      "Open Launcher logs, then try stopping again.";
+    const failedRecord = updateOwnership(env, readOwnership(env), {
+      state: "failed",
+      phase: null,
+      failure,
+    });
+    return sessionSummary(failedRecord, { state: "failed", failure });
+  }
   return sessionSummary(record, {
     state: "stopping",
     timedOut: true,
@@ -463,6 +518,25 @@ async function takeOwnership(env, appUrl) {
       );
     }
     if (existing) {
+      if (!existing.unreadable && Array.isArray(existing.managedProcesses)) {
+        const ownedGroups = existing.managedProcesses.filter(processIdentityAlive);
+        for (const managedProcess of ownedGroups) {
+          signalProcessGroup(managedProcess.pid, "SIGTERM");
+        }
+        if (ownedGroups.length > 0) {
+          const deadline = Date.now() + configuredStopTimeout(env, false);
+          while (ownedGroups.some(recordedGroupAlive) && Date.now() < deadline) await delay(25);
+          const survivors = ownedGroups.filter(recordedGroupAlive);
+          if (survivors.length > 0) {
+            const names = survivors.map(({ name }) => name).join(", ");
+            const failure =
+              `Recovery could not stop these verified processes: ${names}. ` +
+              "Open Launcher logs, then stop them before launching again.";
+            updateOwnership(env, existing, { state: "failed", phase: null, failure });
+            throw new LauncherError(failure);
+          }
+        }
+      }
       // Both halves of the claim are tested before it is thrown away: the
       // owner is gone, and nothing it left behind is still serving. An
       // unreadable record names no address to ask about, so there is nothing
@@ -475,7 +549,10 @@ async function takeOwnership(env, appUrl) {
       }
       removeOwnership(env);
     }
-    const record = claimOwnership(env, { appUrl: appUrl.href });
+    const record = claimOwnership(env, {
+      appUrl: appUrl.href,
+      token: SUPERVISOR_PROCESS_TOKEN,
+    });
     if (record) return record;
   }
   throw new LauncherError(

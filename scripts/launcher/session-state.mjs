@@ -52,10 +52,53 @@ function processStartTime(pid) {
   return result.stdout.trim() || null;
 }
 
+function processCarriesToken(pid, token) {
+  const result = spawnSync(PS, ["eww", "-p", String(pid), "-o", "command="], {
+    encoding: "utf8",
+  });
+  return (
+    result.status === 0 &&
+    (result.stdout.split(/\s+/).includes(`OMNIPOST_LAUNCHER_PROCESS_ID=${token}`) ||
+      result.stdout.includes(`OmniPost-Launcher-${token}`))
+  );
+}
+
+/** Capture the kernel-backed identity needed to target one owned process group. */
+export function processIdentity(pid, token) {
+  const startTime = processStartTime(pid);
+  return startTime ? { pid, processStartTime: startTime, ...(token ? { token } : {}) } : null;
+}
+
+/** True only while an identity still names the same operating-system process. */
+export function processIdentityAlive(identity) {
+  return (
+    Number.isInteger(identity?.pid) &&
+    identity.pid > 0 &&
+    typeof identity.processStartTime === "string" &&
+    processStartTime(identity.pid) === identity.processStartTime &&
+    typeof identity.token === "string" &&
+    processCarriesToken(identity.pid, identity.token)
+  );
+}
+
 /** True only when the process that wrote this record is still the one running. */
 export function ownerAlive(record) {
-  if (!record?.processStartTime) return false;
-  return processStartTime(record.pid) === record.processStartTime;
+  return processIdentityAlive(record);
+}
+
+function hasValidManagedProcesses(record) {
+  return (
+    record.managedProcesses === undefined ||
+    (Array.isArray(record.managedProcesses) &&
+      record.managedProcesses.every(
+        (managedProcess) =>
+          typeof managedProcess?.name === "string" &&
+          Number.isInteger(managedProcess.pid) &&
+          managedProcess.pid > 0 &&
+          typeof managedProcess.processStartTime === "string" &&
+          (managedProcess.token === undefined || typeof managedProcess.token === "string"),
+      ))
+  );
 }
 
 function isCompleteRecord(record) {
@@ -65,10 +108,12 @@ function isCompleteRecord(record) {
     Number.isInteger(record.pid) &&
     record.pid > 0 &&
     typeof record.processStartTime === "string" &&
+    (record.token === undefined || typeof record.token === "string") &&
     typeof record.sessionId === "string" &&
     typeof record.startedAt === "string" &&
     RECORDED_STATES.includes(record.state) &&
-    URL.canParse(record.appUrl)
+    URL.canParse(record.appUrl) &&
+    hasValidManagedProcesses(record)
   );
 }
 
@@ -100,7 +145,7 @@ export function readOwnership(env) {
  * resolve to a single owner, and writing the record is also the proof that the
  * runtime location is usable at all.
  */
-export function claimOwnership(env, { appUrl }) {
+export function claimOwnership(env, { appUrl, token }) {
   const directory = runtimeDirectory(env);
   const startTime = processStartTime(process.pid);
   if (!startTime) {
@@ -115,10 +160,12 @@ export function claimOwnership(env, { appUrl }) {
     sessionId: randomUUID(),
     pid: process.pid,
     processStartTime: startTime,
+    token,
     startedAt: new Date().toISOString(),
     state: "starting",
     phase: "Checking prerequisites",
     appUrl,
+    managedProcesses: [],
   };
   // Written in full beside the real name and then linked into place, because
   // creating the file and filling it are two steps: a launch that read the

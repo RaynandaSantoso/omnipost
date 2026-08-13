@@ -89,7 +89,7 @@ function stubCommands(only?: string[]): { directory: string; logPath: string } {
   const directory = mkdtempSync(path.join(tmpdir(), "omnipost-production-launcher-"));
   temporaryDirectories.push(directory);
   const logPath = path.join(directory, "children.log");
-  const command = `#!/usr/bin/env node
+const command = `#!/usr/bin/env node
 const { appendFileSync } = require("node:fs");
 const name = require("node:path").basename(process.argv[1]);
 const record = (event) => appendFileSync(process.env.LAUNCHER_LOG, JSON.stringify({ command: name, event, args: process.argv.slice(2) }) + "\\n");
@@ -97,6 +97,7 @@ const failing = (process.env.LAUNCHER_FAILING_COMMANDS ?? "").split(",").filter(
 const delayed = (process.env.LAUNCHER_DELAY_SIGTERM_COMMANDS ?? "").split(",").filter(Boolean);
 const ignoring = (process.env.LAUNCHER_IGNORE_SIGTERM_COMMANDS ?? "").split(",").filter(Boolean);
 const withDescendant = (process.env.LAUNCHER_DESCENDANT_COMMANDS ?? "").split(",").filter(Boolean);
+const exitAfterRunning = (process.env.LAUNCHER_EXIT_AFTER_RUNNING_COMMANDS ?? "").split(",").filter(Boolean);
 record("start");
 if (process.env.LAUNCHER_EMIT_OUTPUT) {
   for (const secretName of ["ACCESS_PASSWORD", "YOUTUBE_CLIENT_SECRET", "TIKTOK_CLIENT_SECRET", "INSTAGRAM_APP_SECRET", "TOKEN_ENCRYPTION_KEY"]) {
@@ -116,6 +117,7 @@ if (name === "next" && process.argv[2] === "start" && process.env.LAUNCHER_HEALT
 if (withDescendant.includes(name)) {
   require("node:child_process").spawn(process.execPath, ["-e", 'process.on("SIGTERM", () => setTimeout(() => process.exit(0), Number(process.env.LAUNCHER_DESCENDANT_SIGTERM_MS ?? 300))); setInterval(() => {}, 1000)'], { stdio: "ignore" });
 }
+if (exitAfterRunning.includes(name)) setTimeout(() => process.exit(1), 1500);
 for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"]) process.on(signal, () => {
   record(signal);
   if (signal === "SIGTERM" && ignoring.includes(name)) return;
@@ -167,6 +169,7 @@ function launcherEnvironment(directory: string, logPath: string, appUrl: string)
 }
 
 const LAUNCHER = path.join(process.cwd(), "scripts/launch.mjs");
+const MENU_BAR_BRIDGE = path.join(process.cwd(), "scripts/menu-bar/bridge.mjs");
 
 // Awaited rather than run synchronously, because a launcher command may need
 // this process to answer the health endpoint while it runs.
@@ -223,6 +226,7 @@ function ownershipRecord({ appUrl, pid }: { appUrl: string; pid: number }) {
     // The recorded start time of a process that has since exited, or that never
     // had this process id in the first place.
     processStartTime: "Mon Jan  1 00:00:00 2024",
+    token: "stale-owner-token",
     startedAt: "2024-01-01T00:00:00.000Z",
     state: "running",
     appUrl,
@@ -912,6 +916,37 @@ describe("production launcher", () => {
     expect((await launcherCommand(["status"], { env: environment })).stdout).toContain("Stopped");
   });
 
+  it("records Failed when force stop cannot verify complete cleanup", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      OMNIPOST_STOP_WAIT_TIMEOUT_MS: "75",
+    };
+    const ownerToken = "force-timeout-owner-token";
+    const owner = spawn(
+      process.execPath,
+      ["-e", 'process.on("SIGUSR2", () => {}); setInterval(() => {}, 1000)'],
+      { env: { ...process.env, OMNIPOST_LAUNCHER_PROCESS_ID: ownerToken } },
+    );
+    writeOwnership(environment, {
+      ...ownershipRecord({ appUrl: `http://127.0.0.1:${port}/`, pid: owner.pid! }),
+      processStartTime: liveProcessStartTime(owner.pid!),
+      token: ownerToken,
+      state: "stopping",
+      forceAllowed: true,
+    });
+
+    const forced = await launcherCommand(["stop", "--force"], { env: environment });
+    const reported = await launcherCommand(["status"], { env: environment });
+
+    expect(forced.status).toBe(1);
+    expect(forced.stderr).toContain("Force Stop could not verify that every owned process exited");
+    expect(reported.status).toBe(5);
+    expect(reported.stdout).toContain("Force Stop could not verify that every owned process exited");
+    owner.kill("SIGKILL");
+  });
+
   it("joins concurrent stop requests into one idempotent shutdown", async () => {
     const port = await unusedPort();
     const { directory, logPath } = stubCommands();
@@ -1239,11 +1274,12 @@ describe("production launcher", () => {
     const owner = spawn(process.execPath, [
       "-e",
       'process.on("SIGTERM", () => setTimeout(() => process.exit(0), 300)); setInterval(() => {}, 1000)',
-    ]);
+    ], { env: { ...process.env, OMNIPOST_LAUNCHER_PROCESS_ID: "live-owner-token" } });
     const ownerExited = new Promise<void>((resolve) => owner.once("exit", () => resolve()));
     writeOwnership(environment, {
       ...ownershipRecord({ appUrl: `http://127.0.0.1:${port}/`, pid: owner.pid! }),
       processStartTime: liveProcessStartTime(owner.pid!),
+      token: "live-owner-token",
       state: "failed",
       failure: "The tunnel exited.",
     });
@@ -1341,4 +1377,205 @@ describe("production launcher", () => {
 
     expect(launched.stdout).toContain("Waiting for OmniPost to answer its health endpoint");
   });
+
+  it("recovers verified owned process groups after the supervisor crashes", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      LAUNCHER_HEALTH_PORT: String(port),
+    };
+    const first = spawn(process.execPath, [LAUNCHER], {
+      cwd: projectDirectory("cached-build"),
+      env: environment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    await waitFor(() => readEvents(logPath).some(({ command }) => command === "open"));
+
+    first.kill("SIGKILL");
+    await new Promise<void>((resolve) => first.once("exit", () => resolve()));
+    expect((await launcherCommand(["status"], { env: environment })).stdout).toContain("Failed");
+
+    const second = spawn(process.execPath, [LAUNCHER], {
+      cwd: projectDirectory("cached-build"),
+      env: environment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    await waitFor(() => readEvents(logPath).filter(({ command }) => command === "open").length === 2);
+
+    expect(
+      readEvents(logPath)
+        .filter(({ event }) => event === "SIGTERM")
+        .map(({ command }) => command)
+        .sort(),
+    ).toEqual(["caffeinate", "next", "ngrok"]);
+
+    second.kill("SIGTERM");
+    await new Promise<void>((resolve) => second.once("exit", () => resolve()));
+  });
+
+  it("does not signal a process whose identifier was reused after a crash", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      OMNIPOST_LAUNCH_TIMEOUT_MS: "500",
+    };
+    const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    writeOwnership(environment, {
+      ...ownershipRecord({ appUrl: `http://127.0.0.1:${port}/`, pid: finishedPid() }),
+      managedProcesses: [
+        {
+          name: "OmniPost",
+          pid: unrelated.pid,
+          processStartTime: liveProcessStartTime(unrelated.pid!),
+          token: "token-that-unrelated-process-does-not-carry",
+        },
+      ],
+    });
+
+    try {
+      const launched = await launcherCommand([], { env: environment });
+      expect(launched.stdout).toContain("Waiting for OmniPost to answer its health endpoint");
+      expect(() => process.kill(unrelated.pid!, 0)).not.toThrow();
+    } finally {
+      process.kill(-unrelated.pid!, "SIGKILL");
+    }
+  });
+
+  it("does not discard a healthy live session recorded before process tokens", async () => {
+    const port = await unusedPort();
+    await startHealthyServer(port);
+    const { directory, logPath } = stubCommands();
+    const environment = launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`);
+    const legacyOwner = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+    const legacyRecord = ownershipRecord({ appUrl: `http://127.0.0.1:${port}/`, pid: legacyOwner.pid! });
+    delete (legacyRecord as { token?: string }).token;
+    legacyRecord.processStartTime = liveProcessStartTime(legacyOwner.pid!);
+    writeOwnership(environment, legacyRecord);
+
+    try {
+      const launched = await launcherCommand([], { env: environment });
+
+      expect(launched.status).toBe(1);
+      expect(launched.stderr).toContain("something is still answering there");
+      expect(existsSync(path.join(environment.OMNIPOST_RUNTIME_DIR, "session.json"))).toBe(true);
+      expect(() => process.kill(legacyOwner.pid!, 0)).not.toThrow();
+    } finally {
+      legacyOwner.kill("SIGKILL");
+    }
+  });
+
+  it("keeps recovery Failed when a verified crash-left process will not exit", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      OMNIPOST_STOP_TIMEOUT_MS: "100",
+    };
+    const survivor = spawn(
+      process.execPath,
+      ["-e", 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'],
+      {
+        detached: true,
+        stdio: "ignore",
+        env: { ...process.env, OMNIPOST_LAUNCHER_PROCESS_ID: "survivor-token" },
+      },
+    );
+    writeOwnership(environment, {
+      ...ownershipRecord({ appUrl: `http://127.0.0.1:${port}/`, pid: finishedPid() }),
+      managedProcesses: [
+        {
+          name: "OmniPost",
+          pid: survivor.pid,
+          processStartTime: liveProcessStartTime(survivor.pid!),
+          token: "survivor-token",
+        },
+      ],
+    });
+
+    try {
+      const launched = await launcherCommand([], { env: environment });
+      const reported = await launcherCommand(["status"], { env: environment });
+
+      expect(launched.status).toBe(1);
+      expect(launched.stderr).toContain("Recovery could not stop these verified processes: OmniPost");
+      expect(reported.status).toBe(5);
+      expect(reported.stdout).toContain("Recovery could not stop these verified processes: OmniPost");
+      expect(() => process.kill(survivor.pid!, 0)).not.toThrow();
+    } finally {
+      process.kill(-survivor.pid!, "SIGKILL");
+    }
+  });
+
+  it("keeps the session controllable when the menu-bar adapter disappears", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const project = projectDirectory("cached-build");
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      LAUNCHER_HEALTH_PORT: String(port),
+    };
+    const bridge = spawn(process.execPath, [MENU_BAR_BRIDGE, project], {
+      cwd: project,
+      env: environment,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    bridge.stdin.write("activate\n");
+    await waitFor(() => readEvents(logPath).some(({ command }) => command === "open"));
+
+    bridge.stdin.destroy();
+    const reported = await launcherCommand(["status"], { env: environment });
+    const stopped = await launcherCommand(["stop"], { env: environment });
+
+    expect(reported.status).toBe(0);
+    expect(reported.stdout).toContain("Running");
+    expect(stopped.status).toBe(0);
+    bridge.kill("SIGTERM");
+  }, 15_000);
+
+  it.each([
+    ["next", "OmniPost"],
+    ["ngrok", "Reserved public tunnel"],
+  ] as const)(
+    "marks the session Failed and cleans up after a Running %s crash",
+    async (command, processLabel) => {
+      const port = await unusedPort();
+      const { directory, logPath } = stubCommands();
+      const environment = {
+        ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+        LAUNCHER_HEALTH_PORT: String(port),
+        LAUNCHER_EXIT_AFTER_RUNNING_COMMANDS: command,
+      };
+      const launcher = spawn(process.execPath, [LAUNCHER], {
+        cwd: projectDirectory("cached-build"),
+        env: environment,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      await waitFor(() => readEvents(logPath).some(({ command: name }) => name === "open"));
+      await new Promise<void>((resolve) => launcher.once("exit", () => resolve()));
+
+      const reported = await launcherCommand(["status"], { env: environment });
+      expect(reported.status).toBe(5);
+      expect(reported.stdout).toContain(`${processLabel} exited, so OmniPost is stopping`);
+      expect(
+        readEvents(logPath)
+          .filter(({ event }) => event === "SIGTERM")
+          .map(({ command: name }) => name),
+      ).toEqual(expect.arrayContaining(["caffeinate"]));
+      if (command === "next") {
+        expect(readEvents(logPath)).toContainEqual(
+          expect.objectContaining({ command: "ngrok", event: "SIGTERM" }),
+        );
+      } else {
+        expect(readEvents(logPath)).toContainEqual(
+          expect.objectContaining({ command: "next", event: "SIGTERM" }),
+        );
+      }
+    },
+    15_000,
+  );
 });

@@ -102,6 +102,27 @@ export function createMenuBarController({ launcher, env, cwd, emit, startupRefre
     await finishAfterStop(stopped);
   }
 
+  async function terminateForMacOS() {
+    pendingIntent = "terminate";
+    emit(
+      presentStatus({
+        state: "stopping",
+        phase: "macOS requested termination; OmniPost is cleaning up before exiting.",
+      }),
+    );
+    let stopped = await launcher.stopSession({ env, keepWaiting: false, force: false });
+    if (stopped.timedOut) {
+      stopped = await launcher.stopSession({ env, keepWaiting: false, force: true });
+    }
+    if (stopped.state !== "stopped") {
+      emit(presentStatus(stopped));
+      pendingIntent = null;
+      return;
+    }
+    pendingIntent = null;
+    emit({ type: "quitReady" });
+  }
+
   function canContinuePendingStop(current) {
     return Boolean(
       pendingIntent && (current.state === "stopping" || current.state === "failed"),
@@ -121,9 +142,15 @@ export function createMenuBarController({ launcher, env, cwd, emit, startupRefre
 
       if (action === "activate") {
         if (current.state === "running") await launcher.open({ env });
-        else if (current.state === "stopped") {
+        else if (current.state === "stopped" || current.state === "failed") {
           emit(
-            presentStatus({ state: "starting", phase: "Starting the production Launcher" }),
+            presentStatus({
+              state: "starting",
+              phase:
+                current.state === "failed"
+                  ? "Recovering the interrupted session"
+                  : "Starting the production Launcher",
+            }),
           );
           const startPromise = launcher.start({ env, cwd, rebuild: false });
           const refreshTimer = setInterval(() => {
@@ -132,6 +159,11 @@ export function createMenuBarController({ launcher, env, cwd, emit, startupRefre
           const started = await startPromise.finally(() => clearInterval(refreshTimer));
           emit(presentStatus(started));
         }
+        return;
+      }
+
+      if (action === "recover") {
+        await dispatch("activate");
         return;
       }
 
@@ -184,6 +216,15 @@ export function createMenuBarController({ launcher, env, cwd, emit, startupRefre
           "quit",
           "OmniPost may still be finishing an active Job before quitting.",
         );
+        return;
+      }
+
+      if (action === "terminate") {
+        if (current.state === "stopped") {
+          emit({ type: "quitReady" });
+          return;
+        }
+        await terminateForMacOS();
         return;
       }
 
