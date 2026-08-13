@@ -51,8 +51,9 @@ keep `npm run dev` running until Instagram finishes processing the video.
 Install and authenticate ngrok, then configure `PUBLIC_BASE_URL` and
 `ACCESS_PASSWORD` in `.env`. Double-click
 `OmniPost.app`, or drag that app to the Dock without moving it out of
-the repository. The Launcher opens a Terminal-owned production session. Press
-`Ctrl+C` there to stop the app and tunnel together. Timestamped session logs
+the repository. The Launcher opens a Terminal-owned production session. Use
+the lifecycle commands below, or press `Ctrl+C` there, to stop the app and
+tunnel together. Timestamped session logs
 remain under `~/Library/Logs/OmniPost` after Terminal closes; their contents
 and file paths are readable only by your macOS account.
 
@@ -81,15 +82,25 @@ npm run launch            # start the session (add -- --rebuild to force a build
 npm run launch:status     # what the session is doing
 npm run launch:open       # bring the browser tab forward
 npm run launch:logs       # print the current or most recent session log
+npm run launch:stop       # gracefully stop the complete session
+npm run launch:restart    # stop cleanly, then start through the same lifecycle
 ```
+
+Stop first asks the production app to drain active work, withdraws the tunnel,
+and releases idle-sleep prevention. If the configurable graceful wait
+(`OMNIPOST_STOP_TIMEOUT_MS`, 30 seconds by default) expires, keep waiting with
+`npm run launch:stop -- --wait` or explicitly force the recorded session with
+`npm run launch:stop -- --force`. Force Stop is never automatic; interrupted
+Jobs recover through their existing Lease and Transfer state.
 
 There is at most one session per operator. Launching again while it is Running
 starts nothing and only brings the browser tab forward; launching while another
 one is still starting refuses rather than competing with it. `status` reports
-**Starting** (with the current phase), **Running**, **Stopped**, or **Failed**
-(with the reason the last session ended), and exits `0`, `3`, `4`, or `5`
-respectively so scripts can branch on the state. `start` and `open` exit `0`
-when they did what was asked and `1` otherwise.
+**Starting** (with the current phase), **Running**, **Stopping**, **Stopped**,
+or **Failed** (with the reason the last session ended). Transitional states
+exit `3`, Stopped exits `4`, Failed exits `5`, and Running exits `0`, so scripts
+can branch on the state. `start`, `open`, `stop`, and `restart` exit `0` when
+they did what was asked and `1` otherwise.
 
 Running is never assumed from a leftover file or from something answering on
 the port: it means the recorded supervising process is still that same process

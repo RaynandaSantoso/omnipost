@@ -20,7 +20,7 @@ import path from "node:path";
 import { LauncherError } from "./errors.mjs";
 
 const STATE_FILE = "session.json";
-const RECORDED_STATES = ["starting", "running", "failed"];
+const RECORDED_STATES = ["starting", "running", "stopping", "failed"];
 // Absolute, because a launch may be validating a PATH that has already been
 // found wanting — verifying an owner must not depend on the operator's PATH.
 const PS = "/bin/ps";

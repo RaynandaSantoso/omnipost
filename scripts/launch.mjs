@@ -4,7 +4,7 @@
 // a session is and whether it may start belongs to scripts/launcher/.
 import { readFileSync } from "node:fs";
 
-import { logs, open, start, status } from "./launcher/lifecycle.mjs";
+import { logs, open, restart, start, status, stopSession } from "./launcher/lifecycle.mjs";
 import { createRedactor } from "./launcher/session-log.mjs";
 
 function readEnvFile(path) {
@@ -46,6 +46,11 @@ const STATES = {
     label: "Starting",
     exit: 3,
     advice: "Wait for it to finish starting, then try again.",
+  },
+  stopping: {
+    label: "Stopping",
+    exit: 3,
+    advice: "OmniPost may still be finishing an active Job.",
   },
   stopped: { label: "Stopped", exit: 4, advice: "Start OmniPost with `npm run launch`." },
   failed: { label: "Failed", exit: 5, advice: "Start OmniPost with `npm run launch`." },
@@ -98,6 +103,45 @@ const commands = {
     }
     process.stdout.write(redact(result.content));
     return 0;
+  },
+
+  async stop() {
+    const result = await stopSession({
+      env: envValue,
+      keepWaiting: process.argv.includes("--wait"),
+      force: process.argv.includes("--force"),
+    });
+    if (result.state === "stopped") {
+      if (process.argv.includes("--force") && !result.alreadyStopped) {
+        console.log(
+          "OmniPost was force stopped. Interrupted Jobs recover through existing Lease and Transfer state.",
+        );
+      } else {
+        console.log(
+          result.alreadyStopped ? "OmniPost is already stopped." : "OmniPost stopped cleanly.",
+        );
+      }
+      return 0;
+    }
+    const choices = result.forceRefused
+      ? result.failure
+      : result.timedOut
+      ? "Keep waiting with `npm run launch:stop -- --wait`, or explicitly force stop with " +
+        "`npm run launch:stop -- --force`."
+      : STATES[result.state].advice;
+    console.error(redact(`${describe(result)}\n${choices}`));
+    return 1;
+  },
+
+  async restart() {
+    const result = await restart({
+      env: envValue,
+      cwd: process.cwd(),
+      rebuild: process.argv.includes("--rebuild"),
+    });
+    if (result.state === "running") return 0;
+    console.error(redact(`${describe(result)}\n${STATES[result.state].advice}`));
+    return 1;
   },
 };
 

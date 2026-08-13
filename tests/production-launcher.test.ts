@@ -94,6 +94,9 @@ const { appendFileSync } = require("node:fs");
 const name = require("node:path").basename(process.argv[1]);
 const record = (event) => appendFileSync(process.env.LAUNCHER_LOG, JSON.stringify({ command: name, event, args: process.argv.slice(2) }) + "\\n");
 const failing = (process.env.LAUNCHER_FAILING_COMMANDS ?? "").split(",").filter(Boolean);
+const delayed = (process.env.LAUNCHER_DELAY_SIGTERM_COMMANDS ?? "").split(",").filter(Boolean);
+const ignoring = (process.env.LAUNCHER_IGNORE_SIGTERM_COMMANDS ?? "").split(",").filter(Boolean);
+const withDescendant = (process.env.LAUNCHER_DESCENDANT_COMMANDS ?? "").split(",").filter(Boolean);
 record("start");
 if (process.env.LAUNCHER_EMIT_OUTPUT) {
   for (const secretName of ["ACCESS_PASSWORD", "YOUTUBE_CLIENT_SECRET", "TIKTOK_CLIENT_SECRET", "INSTAGRAM_APP_SECRET", "TOKEN_ENCRYPTION_KEY"]) {
@@ -105,7 +108,26 @@ if (process.env.LAUNCHER_EMIT_OUTPUT) {
 }
 if (failing.includes(name) || failing.includes(name + " " + process.argv[2])) process.exit(1);
 if (name === "open" || (name === "next" && process.argv[2] === "build")) process.exit(0);
-for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { record(signal); process.exit(0); });
+let healthServer;
+if (name === "next" && process.argv[2] === "start" && process.env.LAUNCHER_HEALTH_PORT) {
+  healthServer = require("node:http").createServer((_request, response) => response.writeHead(200).end("ok"));
+  healthServer.listen(Number(process.env.LAUNCHER_HEALTH_PORT), "127.0.0.1");
+}
+if (withDescendant.includes(name)) {
+  require("node:child_process").spawn(process.execPath, ["-e", 'process.on("SIGTERM", () => setTimeout(() => process.exit(0), Number(process.env.LAUNCHER_DESCENDANT_SIGTERM_MS ?? 300))); setInterval(() => {}, 1000)'], { stdio: "ignore" });
+}
+for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"]) process.on(signal, () => {
+  record(signal);
+  if (signal === "SIGTERM" && ignoring.includes(name)) return;
+  const exit = () => {
+    record("exit");
+    if (healthServer) healthServer.close(() => process.exit(0));
+    else process.exit(0);
+  };
+  if (signal === "SIGTERM" && delayed.includes(name)) {
+    setTimeout(exit, Number(process.env.LAUNCHER_DELAY_SIGTERM_MS ?? 250));
+  } else exit();
+});
 setInterval(() => {}, 1000);
 `;
   for (const name of only ?? ["next", "ngrok", "caffeinate", "open"]) {
@@ -661,6 +683,290 @@ describe("production launcher", () => {
     expect(afterStop.stdout).toContain("Stopped");
     expect(afterStop.status).toBe(4);
   });
+
+  it("stops an active session through the lifecycle command and treats idle stop as success", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`);
+    const launcher = await startedLauncher(environment, port);
+    const launcherExited = new Promise<void>((resolve) => launcher.once("exit", () => resolve()));
+
+    const stopped = await launcherCommand(["stop"], { env: environment });
+    await launcherExited;
+    const stoppedAgain = await launcherCommand(["stop"], { env: environment });
+    const reported = await launcherCommand(["status"], { env: environment });
+
+    expect(stopped.status).toBe(0);
+    expect(stopped.stdout).toContain("stopped");
+    expect(stoppedAgain.status).toBe(0);
+    expect(stoppedAgain.stdout).toContain("already stopped");
+    expect(reported.status).toBe(4);
+    expect(reported.stdout).toContain("Stopped");
+    expect(
+      readEvents(logPath)
+        .filter(({ event }) => event === "SIGTERM")
+        .map(({ command }) => command)
+        .sort(),
+    ).toEqual(["caffeinate", "next", "ngrok"]);
+  });
+
+  it("restarts by completing the shared stop behavior before starting again", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      LAUNCHER_HEALTH_PORT: String(port),
+    };
+    const launcher = spawn(process.execPath, [LAUNCHER], {
+      cwd: projectDirectory("cached-build"),
+      env: environment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    await waitFor(() => readEvents(logPath).some(({ command }) => command === "open"));
+    const originalExited = new Promise<void>((resolve) => launcher.once("exit", () => resolve()));
+    const firstSessionEventCount = readEvents(logPath).length;
+
+    const restarted = spawn(process.execPath, [LAUNCHER, "restart"], {
+      cwd: projectDirectory("cached-build"),
+      env: environment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    await waitFor(
+      () =>
+        readEvents(logPath).filter(
+          ({ command, event, args }) =>
+            command === "next" && event === "start" && args[0] === "start",
+        ).length === 2,
+    );
+    await waitFor(() => readEvents(logPath).filter(({ command }) => command === "open").length === 2);
+
+    const restartEvents = readEvents(logPath).slice(firstSessionEventCount);
+    expect(restartEvents.findIndex(({ command, event }) => command === "next" && event === "SIGTERM"))
+      .toBeLessThan(
+        restartEvents.findIndex(
+          ({ command, event, args }) =>
+            command === "next" && event === "start" && args[0] === "start",
+        ),
+      );
+
+    const restartedExited = new Promise<void>((resolve) => restarted.once("exit", () => resolve()));
+    restarted.kill("SIGTERM");
+    await restartedExited;
+    await originalExited;
+  });
+
+  it("reports a graceful-stop timeout and keeps waiting on request", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      LAUNCHER_HEALTH_PORT: String(port),
+      LAUNCHER_DELAY_SIGTERM_COMMANDS: "next",
+      LAUNCHER_DELAY_SIGTERM_MS: "300",
+      OMNIPOST_STOP_TIMEOUT_MS: "75",
+      OMNIPOST_STOP_WAIT_TIMEOUT_MS: "1000",
+    };
+    const launcher = spawn(process.execPath, [LAUNCHER], {
+      cwd: projectDirectory("cached-build"),
+      env: environment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const launcherExited = new Promise<void>((resolve) => launcher.once("exit", () => resolve()));
+    await waitFor(() => readEvents(logPath).some(({ command }) => command === "open"));
+
+    const timedOut = await launcherCommand(["stop"], { env: environment });
+    const duringStop = await launcherCommand(["status"], { env: environment });
+    const waited = await launcherCommand(["stop", "--wait"], { env: environment });
+    await launcherExited;
+
+    expect(timedOut.status).toBe(1);
+    expect(timedOut.stderr).toContain("finishing an active Job");
+    expect(timedOut.stderr).toContain("--wait");
+    expect(timedOut.stderr).toContain("--force");
+    expect(duringStop.status).toBe(3);
+    expect(duringStop.stdout).toContain("Stopping");
+    expect(waited.status).toBe(0);
+    expect(waited.stdout).toContain("stopped cleanly");
+  });
+
+  it("keeps cleaning up after some children have already exited during shutdown", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      LAUNCHER_HEALTH_PORT: String(port),
+      LAUNCHER_DELAY_SIGTERM_COMMANDS: "next",
+      LAUNCHER_DELAY_SIGTERM_MS: "300",
+      OMNIPOST_STOP_TIMEOUT_MS: "1000",
+    };
+    const launcher = spawn(process.execPath, [LAUNCHER], {
+      cwd: projectDirectory("cached-build"),
+      env: environment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const launcherExited = new Promise<void>((resolve) => launcher.once("exit", () => resolve()));
+    await waitFor(() => readEvents(logPath).some(({ command }) => command === "open"));
+
+    const stopping = launcherCommand(["stop"], { env: environment });
+    await waitFor(
+      () =>
+        readEvents(logPath).some(
+          ({ command, event }) => command === "caffeinate" && event === "exit",
+        ) &&
+        !readEvents(logPath).some(({ command, event }) => command === "next" && event === "exit"),
+    );
+    const stopped = await stopping;
+    await launcherExited;
+
+    expect(stopped.status).toBe(0);
+    expect(
+      readEvents(logPath)
+        .filter(({ event }) => event === "exit")
+        .map(({ command }) => command)
+        .sort(),
+    ).toEqual(["caffeinate", "next", "ngrok"]);
+  });
+
+  it("reports stop success only after descendants in every owned process group exit", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      LAUNCHER_HEALTH_PORT: String(port),
+      LAUNCHER_DESCENDANT_COMMANDS: "next",
+      OMNIPOST_STOP_TIMEOUT_MS: "1000",
+    };
+    const launcher = spawn(process.execPath, [LAUNCHER], {
+      cwd: projectDirectory("cached-build"),
+      env: environment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const launcherExited = new Promise<void>((resolve) => launcher.once("exit", () => resolve()));
+    await waitFor(() => readEvents(logPath).some(({ command }) => command === "open"));
+
+    const stopStartedAt = Date.now();
+    const stopped = await launcherCommand(["stop"], { env: environment });
+    const stopDurationMs = Date.now() - stopStartedAt;
+    await launcherExited;
+
+    expect(stopped.status).toBe(0);
+    expect(stopDurationMs).toBeGreaterThanOrEqual(250);
+  });
+
+  it("force stops a surviving descendant after its owned group leader exits", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      LAUNCHER_HEALTH_PORT: String(port),
+      LAUNCHER_DESCENDANT_COMMANDS: "next",
+      LAUNCHER_DESCENDANT_SIGTERM_MS: "5000",
+      OMNIPOST_STOP_TIMEOUT_MS: "75",
+      OMNIPOST_STOP_WAIT_TIMEOUT_MS: "1000",
+    };
+    const launcher = spawn(process.execPath, [LAUNCHER], {
+      cwd: projectDirectory("cached-build"),
+      env: environment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const launcherExited = new Promise<void>((resolve) => launcher.once("exit", () => resolve()));
+    await waitFor(() => readEvents(logPath).some(({ command }) => command === "open"));
+
+    const timedOut = await launcherCommand(["stop"], { env: environment });
+    const forced = await launcherCommand(["stop", "--force"], { env: environment });
+    await launcherExited;
+
+    expect(timedOut.status).toBe(1);
+    expect(forced.status).toBe(0);
+    expect(forced.stdout).toContain("force stopped");
+  });
+
+  it("force stops only after graceful shutdown times out and explains recovery", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      LAUNCHER_HEALTH_PORT: String(port),
+      LAUNCHER_IGNORE_SIGTERM_COMMANDS: "next",
+      OMNIPOST_STOP_TIMEOUT_MS: "75",
+    };
+    const launcher = spawn(process.execPath, [LAUNCHER], {
+      cwd: projectDirectory("cached-build"),
+      env: environment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const launcherExited = new Promise<void>((resolve) => launcher.once("exit", () => resolve()));
+    await waitFor(() => readEvents(logPath).some(({ command }) => command === "open"));
+
+    const refused = await launcherCommand(["stop", "--force"], { env: environment });
+    const timedOut = await launcherCommand(["stop"], { env: environment });
+    const forced = await launcherCommand(["stop", "--force"], { env: environment });
+    await launcherExited;
+
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toContain("graceful shutdown times out");
+    expect(timedOut.status).toBe(1);
+    expect(forced.status).toBe(0);
+    expect(forced.stdout).toContain("Lease and Transfer state");
+    expect((await launcherCommand(["status"], { env: environment })).stdout).toContain("Stopped");
+  });
+
+  it("joins concurrent stop requests into one idempotent shutdown", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      LAUNCHER_HEALTH_PORT: String(port),
+    };
+    const launcher = spawn(process.execPath, [LAUNCHER], {
+      cwd: projectDirectory("cached-build"),
+      env: environment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const launcherExited = new Promise<void>((resolve) => launcher.once("exit", () => resolve()));
+    await waitFor(() => readEvents(logPath).some(({ command }) => command === "open"));
+
+    const results = await Promise.all([
+      launcherCommand(["stop"], { env: environment }),
+      launcherCommand(["stop"], { env: environment }),
+    ]);
+    await launcherExited;
+
+    expect(results.every(({ status }) => status === 0)).toBe(true);
+    expect(
+      readEvents(logPath).filter(({ command, event }) => command === "next" && event === "SIGTERM"),
+    ).toHaveLength(1);
+  });
+
+  it.each(["SIGINT", "SIGTERM", "SIGHUP"] as const)(
+    "routes %s through the same graceful cleanup path",
+    async (signal) => {
+      const port = await unusedPort();
+      const { directory, logPath } = stubCommands();
+      const environment = {
+        ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+        LAUNCHER_HEALTH_PORT: String(port),
+      };
+      const launcher = spawn(process.execPath, [LAUNCHER], {
+        cwd: projectDirectory("cached-build"),
+        env: environment,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const launcherExited = new Promise<void>((resolve) => launcher.once("exit", () => resolve()));
+      await waitFor(() => readEvents(logPath).some(({ command }) => command === "open"));
+
+      launcher.kill(signal);
+      await launcherExited;
+
+      expect(
+        readEvents(logPath)
+          .filter(({ event }) => event === "SIGTERM")
+          .map(({ command }) => command)
+          .sort(),
+      ).toEqual(["caffeinate", "next", "ngrok"]);
+      expect((await launcherCommand(["status"], { env: environment })).stdout).toContain("Stopped");
+    },
+  );
 
   it("opens the owned session on request and keeps its record to itself", async () => {
     const port = await unusedPort();

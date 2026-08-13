@@ -37,6 +37,8 @@ const HEALTH_REQUEST_TIMEOUT_MS = 750;
 // dies after this window still ends the session — it just does so after the
 // tab is open, because liveness is all this session can ask of a tunnel.
 const COMPANION_SETTLE_MS = 500;
+const DEFAULT_STOP_TIMEOUT_MS = 30_000;
+const FORCE_STOP_SIGNAL = "SIGUSR2";
 // A losing claim means another launch got there first, and re-reading tells us
 // which one; a handful of attempts is enough for that to settle.
 const OWNERSHIP_ATTEMPTS = 3;
@@ -67,6 +69,8 @@ const managed = [];
 let session = null;
 let stopping = false;
 let ready = false;
+let shutdownPromise = null;
+let shutdownProcesses = [];
 
 function spawnCommand(command, args) {
   return spawn(command, args, {
@@ -89,7 +93,7 @@ function supervisor(stream, text) {
 }
 
 function signalTree(child, signal) {
-  if (!child.pid || child.killed) return;
+  if (!child.pid) return;
   try {
     if (process.platform !== "win32") process.kill(-child.pid, signal);
     else child.kill(signal);
@@ -136,11 +140,66 @@ function releaseSession() {
   if (session && session.record.state !== "failed") releaseOwnership(session.env, session.record);
 }
 
+function processGroupAlive(child) {
+  if (!child.pid) return false;
+  if (process.platform === "win32") return !child.killed;
+  try {
+    process.kill(-child.pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function waitForExit(managedProcess) {
+  if (!managedProcess.exited) {
+    await new Promise((resolve) => managedProcess.child.once("exit", resolve));
+  }
+  while (processGroupAlive(managedProcess.child)) await delay(25);
+}
+
 function stop(signal = "SIGTERM") {
-  if (stopping) return;
+  if (shutdownPromise) return shutdownPromise;
+  const failed = session?.record.state === "failed";
+  if (session && !failed) {
+    session.record = updateOwnership(session.env, session.record, {
+      state: "stopping",
+      phase: "Waiting for managed processes to exit",
+    });
+  }
   stopping = true;
-  for (const { child } of managed) signalTree(child, signal);
-  releaseSession();
+  shutdownProcesses = [...managed];
+  const gracefulTimeout = setTimeout(() => {
+    if (!session || session.record.state === "failed") return;
+    session.record = updateOwnership(session.env, session.record, {
+      state: "stopping",
+      phase: "OmniPost may still be finishing an active Job",
+      forceAllowed: true,
+    });
+  }, configuredStopTimeout(session?.env ?? (() => undefined), false));
+  shutdownPromise = (async () => {
+    for (const { child } of shutdownProcesses) signalTree(child, signal);
+    await Promise.all(shutdownProcesses.map(waitForExit));
+    clearTimeout(gracefulTimeout);
+    if (!failed) releaseSession();
+  })();
+  return shutdownPromise;
+}
+
+function forceStop() {
+  if (!stopping || !shutdownPromise) return;
+  if (session) {
+    supervisor(
+      "stderr",
+      "Force stopping owned processes. Interrupted Jobs recover through existing Lease and Transfer state.",
+    );
+    session.record = updateOwnership(session.env, session.record, {
+      state: "stopping",
+      phase: "Force stopping owned processes",
+    });
+  }
+  for (const { child } of shutdownProcesses) signalTree(child, "SIGKILL");
 }
 
 function fail(message) {
@@ -152,9 +211,10 @@ function fail(message) {
   stop();
 }
 
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => stop(signal));
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => stop("SIGTERM"));
 }
+process.on(FORCE_STOP_SIGNAL, forceStop);
 // However this supervisor leaves, it stops owning the session — otherwise the
 // next launch would have to wait for a dead owner to be noticed.
 process.on("exit", releaseSession);
@@ -270,6 +330,9 @@ export async function status({ env }) {
   if (record.state === "starting") {
     return sessionSummary(record, { state: "starting", phase: record.phase });
   }
+  if (record.state === "stopping") {
+    return sessionSummary(record, { state: "stopping", phase: record.phase });
+  }
   if (await appAnswers(new URL(record.appUrl))) return sessionSummary(record, { state: "running" });
   const failure = `OmniPost has stopped answering at ${record.appUrl}.`;
   let failedRecord = record;
@@ -302,6 +365,73 @@ export async function open({ env }) {
 /** Read the current or most recent session log without making its location a chore. */
 export function logs({ env }) {
   return readSessionLog(env, readOwnership(env));
+}
+
+function configuredStopTimeout(env, keepWaiting) {
+  const value = Number(
+    env(keepWaiting ? "OMNIPOST_STOP_WAIT_TIMEOUT_MS" : "OMNIPOST_STOP_TIMEOUT_MS"),
+  );
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_STOP_TIMEOUT_MS;
+}
+
+async function waitForSession(env, record, timeoutMs, pollMs, condition = () => false) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const current = readOwnership(env);
+    if (!current || current.sessionId !== record.sessionId) return "released";
+    if (condition(current)) return "matched";
+    await delay(pollMs);
+  }
+  return "timeout";
+}
+
+/** Ask the verified owner to stop, then observe ownership until cleanup finishes. */
+export async function stopSession({ env, keepWaiting = false, force = false }) {
+  const record = readOwnership(env);
+  if (!record || record.unreadable) return { state: "stopped", alreadyStopped: true };
+  if (!ownerAlive(record)) {
+    return sessionSummary(record, {
+      state: "failed",
+      failure: "The Launcher owner is gone, so its managed processes could not be stopped safely.",
+    });
+  }
+
+  if (force && (record.state !== "stopping" || record.forceAllowed !== true)) {
+    return sessionSummary(record, {
+      state: record.state,
+      forceRefused: true,
+      failure: "Force Stop is available only after graceful shutdown times out.",
+    });
+  }
+
+  if (force) process.kill(record.pid, FORCE_STOP_SIGNAL);
+  else if (record.state !== "stopping") process.kill(record.pid, "SIGTERM");
+  const timeoutMs = configuredStopTimeout(env, keepWaiting || force);
+  if ((await waitForSession(env, record, timeoutMs, 25)) === "released") {
+    return sessionSummary(record, { state: "stopped", alreadyStopped: false });
+  }
+  const forcePermission = await waitForSession(
+    env,
+    record,
+    500,
+    10,
+    (current) => current.forceAllowed === true,
+  );
+  if (forcePermission === "released") {
+    return sessionSummary(record, { state: "stopped", alreadyStopped: false });
+  }
+  return sessionSummary(record, {
+    state: "stopping",
+    timedOut: true,
+    phase: "OmniPost may still be finishing an active Job",
+  });
+}
+
+/** Restart deliberately has no second lifecycle: it is stop followed by start. */
+export async function restart({ env, cwd, rebuild }) {
+  const stopped = await stopSession({ env });
+  if (stopped.state !== "stopped") return stopped;
+  return start({ env, cwd, rebuild });
 }
 
 /**
