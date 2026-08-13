@@ -2,38 +2,11 @@
 // `open` (ADR-0004). It reads the operator's environment, prints what happened,
 // and turns the lifecycle state into an exit status — every decision about what
 // a session is and whether it may start belongs to scripts/launcher/.
-import { readFileSync } from "node:fs";
-
+import { environmentFrom } from "./launcher/environment.mjs";
 import { logs, open, restart, start, status, stopSession } from "./launcher/lifecycle.mjs";
 import { createRedactor } from "./launcher/session-log.mjs";
 
-function readEnvFile(path) {
-  try {
-    return Object.fromEntries(
-      readFileSync(path, "utf8")
-        .split(/\r?\n/)
-        .map((line) => line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/))
-        .filter(Boolean)
-        .map((match) => {
-          const value = match[2];
-          const quoted =
-            value.length >= 2 &&
-            ((value.startsWith('"') && value.endsWith('"')) ||
-              (value.startsWith("'") && value.endsWith("'")));
-          return [match[1], quoted ? value.slice(1, -1) : value];
-        }),
-    );
-  } catch (error) {
-    if (error?.code === "ENOENT") return {};
-    throw error;
-  }
-}
-
-const fileEnv = {
-  ...readEnvFile(".env"),
-  ...readEnvFile(".env.local"),
-};
-const envValue = (name) => process.env[name] ?? fileEnv[name];
+const envValue = environmentFrom(process.cwd());
 const redact = createRedactor(envValue);
 
 // Everything this adapter says about a lifecycle state, in one place: what to

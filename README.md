@@ -51,10 +51,10 @@ keep `npm run dev` running until Instagram finishes processing the video.
 Install and authenticate ngrok, then configure `PUBLIC_BASE_URL` and
 `ACCESS_PASSWORD` in `.env`. Double-click
 `OmniPost.app`, or drag that app to the Dock without moving it out of
-the repository. The Launcher opens a Terminal-owned production session. Use
-the lifecycle commands below, or press `Ctrl+C` there, to stop the app and
-tunnel together. Timestamped session logs
-remain under `~/Library/Logs/OmniPost` after Terminal closes; their contents
+the repository. The Launcher stays available as a native menu-bar application;
+use its menu or the lifecycle commands below to control the app and tunnel
+together. Timestamped session logs remain under `~/Library/Logs/OmniPost`
+after the production session stops; their contents
 and file paths are readable only by your macOS account.
 
 Before starting anything, the Launcher checks the whole session: it claims the
@@ -114,6 +114,21 @@ is timestamped and source-labeled. Known passwords, OAuth client secrets, and
 the token-encryption key are redacted before output reaches either Terminal or
 the log. Failed status includes the retained log path for diagnosis. Set
 `OMNIPOST_LOG_DIR` only when the default macOS log location is unsuitable.
+
+### macOS menu-bar application
+
+Open `OmniPost.app` from Finder or keep it in the Dock for daily use. It runs as
+one native menu-bar application (the paper-plane item) without opening
+Terminal. The menu shows Starting, Running, Stopping, Stopped, or Failed together with
+the current startup phase or safe failure summary. Opening the application
+again reveals the existing menu-bar instance: a stopped session starts, while
+a running session brings OmniPost forward in the browser.
+
+Use **Open OmniPost** to return to the dashboard and **View Logs** to open the
+current redacted session log in the normal macOS log viewer. Closing the
+browser does not stop OmniPost. The terminal Launcher commands above remain
+available for scripting, and `npm run dev` and `npm run dev:app` remain
+independent development entry points.
 
 ## Local development (without Docker)
 

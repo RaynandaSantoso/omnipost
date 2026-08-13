@@ -279,7 +279,7 @@ describe("production launcher", () => {
     }
   });
 
-  it("ships as a dock-pinnable macOS app that hands the session to Terminal", () => {
+  it("ships as a Dock-launchable native menu-bar app", () => {
     const bundle = path.join(process.cwd(), "OmniPost.app", "Contents");
     const plist = readFileSync(path.join(bundle, "Info.plist"), "utf8");
     const executable = path.join(bundle, "MacOS", "OmniPost");
@@ -287,8 +287,9 @@ describe("production launcher", () => {
     expect(plist).toContain("CFBundleExecutable");
     expect(plist).toContain("OmniPost.icns");
     expect(statSync(executable).mode & 0o111).not.toBe(0);
-    expect(readFileSync(executable, "utf8")).toContain("osascript");
-    expect(readFileSync(executable, "utf8")).toContain("npm run launch");
+    expect(plist).toContain("LSUIElement");
+    expect(readFileSync(executable, "utf8")).toContain("OmniPostLauncher.swift");
+    expect(readFileSync(executable, "utf8")).not.toContain('tell application "Terminal"');
   });
 
   it("refuses to start a public session without an access password", async () => {

@@ -3,13 +3,28 @@
 set -eu
 
 project_directory="$(cd "$(dirname "$0")/../../.." && pwd)"
+source_file="$project_directory/macos/OmniPostLauncher.swift"
+cache_directory="${TMPDIR:-/tmp}/dev.raynanda.omnipost.launcher"
+launcher_binary="$cache_directory/OmniPostLauncher"
+node_binary=""
 
-/usr/bin/osascript - "$project_directory" <<'APPLESCRIPT'
-on run argv
-  set projectDirectory to item 1 of argv
-  tell application "Terminal"
-    activate
-    do script "cd " & quoted form of projectDirectory & " && npm run launch"
-  end tell
-end run
-APPLESCRIPT
+for candidate in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+  if [[ -x "$candidate" ]]; then
+    node_binary="$candidate"
+    break
+  fi
+done
+if [[ -z "$node_binary" ]]; then
+  node_binary="$(command -v node || true)"
+fi
+if [[ -z "$node_binary" ]]; then
+  /usr/bin/osascript -e 'display alert "OmniPost Launcher" message "Node.js could not be found. Install Node.js, then reopen OmniPost." as critical'
+  exit 1
+fi
+
+/bin/mkdir -p "$cache_directory"
+if [[ ! -x "$launcher_binary" || "$source_file" -nt "$launcher_binary" ]]; then
+  /usr/bin/swiftc -parse-as-library -framework AppKit "$source_file" -o "$launcher_binary"
+fi
+
+exec "$launcher_binary" "$project_directory" "$node_binary"

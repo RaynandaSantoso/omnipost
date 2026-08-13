@@ -18,5 +18,9 @@
   <string>0.1</string>
   <key>CFBundleVersion</key>
   <string>1</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>LSMultipleInstancesProhibited</key>
+  <true/>
 </dict>
 </plist>
