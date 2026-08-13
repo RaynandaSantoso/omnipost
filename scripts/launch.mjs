@@ -4,7 +4,8 @@
 // a session is and whether it may start belongs to scripts/launcher/.
 import { readFileSync } from "node:fs";
 
-import { open, start, status } from "./launcher/lifecycle.mjs";
+import { logs, open, start, status } from "./launcher/lifecycle.mjs";
+import { createRedactor } from "./launcher/session-log.mjs";
 
 function readEnvFile(path) {
   try {
@@ -33,6 +34,7 @@ const fileEnv = {
   ...readEnvFile(".env.local"),
 };
 const envValue = (name) => process.env[name] ?? fileEnv[name];
+const redact = createRedactor(envValue);
 
 // Everything this adapter says about a lifecycle state, in one place: what to
 // call it, what `status` exits with so a script can branch on the state without
@@ -56,6 +58,7 @@ function describe(result) {
   if (result.startedAt) lines.push(`Started: ${result.startedAt}`);
   if (result.appUrl) lines.push(`Address: ${result.appUrl}`);
   if (result.failure) lines.push(`Failure: ${result.failure}`);
+  if (result.logPath) lines.push(`Log: ${result.logPath}`);
   return lines.join("\n");
 }
 
@@ -67,7 +70,7 @@ const commands = {
       rebuild: process.argv.includes("--rebuild"),
     });
     if (result.state !== "running") {
-      console.error(describe(result));
+      console.error(redact(describe(result)));
       return 1;
     }
     if (!result.started) console.log("OmniPost is already running; bringing its tab forward.");
@@ -76,15 +79,25 @@ const commands = {
 
   async status() {
     const result = await status({ env: envValue });
-    console.log(describe(result));
+    console.log(redact(describe(result)));
     return STATES[result.state].exit;
   },
 
   async open() {
     const result = await open({ env: envValue });
     if (result.opened) return 0;
-    console.error(`${describe(result)}\n${STATES[result.state].advice}`);
+    console.error(redact(`${describe(result)}\n${STATES[result.state].advice}`));
     return 1;
+  },
+
+  async logs() {
+    const result = logs({ env: envValue });
+    if (!result.available) {
+      console.error(redact(result.reason));
+      return 1;
+    }
+    process.stdout.write(redact(result.content));
+    return 0;
   },
 };
 
@@ -100,6 +113,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
+  console.error(redact(error instanceof Error ? error.message : String(error)));
   process.exitCode = 1;
 });

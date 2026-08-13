@@ -51,9 +51,10 @@ keep `npm run dev` running until Instagram finishes processing the video.
 Install and authenticate ngrok, then configure `PUBLIC_BASE_URL` and
 `ACCESS_PASSWORD` in `.env`. Double-click
 `OmniPost.app`, or drag that app to the Dock without moving it out of
-the repository. The Launcher opens a Terminal-owned production session.
-Keep the Terminal window open for logs; press `Ctrl+C` there to stop the app
-and tunnel together.
+the repository. The Launcher opens a Terminal-owned production session. Press
+`Ctrl+C` there to stop the app and tunnel together. Timestamped session logs
+remain under `~/Library/Logs/OmniPost` after Terminal closes; their contents
+and file paths are readable only by your macOS account.
 
 Before starting anything, the Launcher checks the whole session: it claims the
 session in a per-user runtime location (`~/Library/Application Support/OmniPost`,
@@ -79,6 +80,7 @@ else:
 npm run launch            # start the session (add -- --rebuild to force a build)
 npm run launch:status     # what the session is doing
 npm run launch:open       # bring the browser tab forward
+npm run launch:logs       # print the current or most recent session log
 ```
 
 There is at most one session per operator. Launching again while it is Running
@@ -95,6 +97,12 @@ the port: it means the recorded supervising process is still that same process
 runtime location, written atomically and readable only by you. A session that
 crashed leaves its record behind so the next `status` can explain it, and the
 next launch clears it — a crash never locks you out.
+
+Launcher, build, app, tunnel, browser-opening, and idle-sleep-inhibitor output
+is timestamped and source-labeled. Known passwords, OAuth client secrets, and
+the token-encryption key are redacted before output reaches either Terminal or
+the log. Failed status includes the retained log path for diagnosis. Set
+`OMNIPOST_LOG_DIR` only when the default macOS log location is unsuitable.
 
 ## Local development (without Docker)
 

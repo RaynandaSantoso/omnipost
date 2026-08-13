@@ -8,6 +8,7 @@
     "launch": "node scripts/launch.mjs start",
     "launch:status": "node scripts/launch.mjs status",
     "launch:open": "node scripts/launch.mjs open",
+    "launch:logs": "node scripts/launch.mjs logs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",

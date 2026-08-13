@@ -40,8 +40,17 @@ export function launchOrigin(value) {
   } catch {
     throw new LauncherError("OMNIPOST_LAUNCH_URL must be a valid HTTP URL.");
   }
-  if (!["http:", "https:"].includes(appUrl.protocol) || appUrl.pathname !== "/") {
-    throw new LauncherError("OMNIPOST_LAUNCH_URL must be an HTTP origin without a path.");
+  if (
+    !["http:", "https:"].includes(appUrl.protocol) ||
+    appUrl.pathname !== "/" ||
+    appUrl.search ||
+    appUrl.hash ||
+    appUrl.username ||
+    appUrl.password
+  ) {
+    throw new LauncherError(
+      "OMNIPOST_LAUNCH_URL must be an HTTP origin without a path, query, fragment, or credentials.",
+    );
   }
   return appUrl;
 }

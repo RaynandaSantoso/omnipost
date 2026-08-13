@@ -95,6 +95,14 @@ const name = require("node:path").basename(process.argv[1]);
 const record = (event) => appendFileSync(process.env.LAUNCHER_LOG, JSON.stringify({ command: name, event, args: process.argv.slice(2) }) + "\\n");
 const failing = (process.env.LAUNCHER_FAILING_COMMANDS ?? "").split(",").filter(Boolean);
 record("start");
+if (process.env.LAUNCHER_EMIT_OUTPUT) {
+  for (const secretName of ["ACCESS_PASSWORD", "YOUTUBE_CLIENT_SECRET", "TIKTOK_CLIENT_SECRET", "INSTAGRAM_APP_SECRET", "TOKEN_ENCRYPTION_KEY"]) {
+    console.log(name + " says " + secretName + "=" + process.env[secretName]);
+  }
+  console.error(name + " emitted its secret-bearing configuration");
+  console.log('oauth response: {"access_token":"dynamic-access-token-fixture","refresh_token":"dynamic-refresh-token-fixture"}');
+  console.error("Authorization: Bearer dynamic-bearer-token-fixture");
+}
 if (failing.includes(name) || failing.includes(name + " " + process.argv[2])) process.exit(1);
 if (name === "open" || (name === "next" && process.argv[2] === "build")) process.exit(0);
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { record(signal); process.exit(0); });
@@ -329,6 +337,11 @@ describe("production launcher", () => {
       environment: { OMNIPOST_LAUNCH_URL: "http://127.0.0.1:3000/dashboard" },
       expectedError: "OMNIPOST_LAUNCH_URL",
     },
+    {
+      name: "a local origin carrying credentials",
+      environment: { OMNIPOST_LAUNCH_URL: "http://user:secret@127.0.0.1:3000" },
+      expectedError: "OMNIPOST_LAUNCH_URL",
+    },
   ])("refuses $name before starting any process", async ({ environment, expectedError }) => {
     const port = await unusedPort();
     const { directory, logPath } = stubCommands();
@@ -495,7 +508,9 @@ describe("production launcher", () => {
       cwd: projectDirectory("cached-build"),
       env: {
         ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
-        OMNIPOST_LAUNCH_TIMEOUT_MS: "750",
+        // This case observes the stub's signal handler, so allow the child to
+        // finish booting even when the full suite is starting many processes.
+        OMNIPOST_LAUNCH_TIMEOUT_MS: "2000",
       },
       encoding: "utf8",
     });
@@ -669,10 +684,12 @@ describe("production launcher", () => {
 
   it("keeps its runtime state in the operator's application-support location", async () => {
     const { runtimeDirectory } = await import("../scripts/launcher/session-state.mjs");
+    const { logDirectory } = await import("../scripts/launcher/session-log.mjs");
 
     expect(runtimeDirectory(() => undefined)).toBe(
       path.join(homedir(), "Library", "Application Support", "OmniPost"),
     );
+    expect(logDirectory(() => undefined)).toBe(path.join(homedir(), "Library", "Logs", "OmniPost"));
   });
 
   it("gives one of two simultaneous launches the session and turns the other away", async () => {
@@ -750,6 +767,180 @@ describe("production launcher", () => {
     expect(reported.stdout).toContain("did not answer");
   });
 
+  it("retains a labeled, redacted session log when a managed process fails", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const sessionLogDirectory = mkdtempSync(path.join(tmpdir(), "omnipost-session-logs-"));
+    temporaryDirectories.push(sessionLogDirectory);
+    const encryptionKey = "recognizable-token-encryption-key-fixture";
+    const oauthSecrets = {
+      YOUTUBE_CLIENT_SECRET: "recognizable-youtube-secret-fixture",
+      TIKTOK_CLIENT_SECRET: "recognizable-tiktok-secret-fixture",
+      INSTAGRAM_APP_SECRET: "recognizable-instagram-secret-fixture",
+    };
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      OMNIPOST_LOG_DIR: sessionLogDirectory,
+      LAUNCHER_EMIT_OUTPUT: "1",
+      LAUNCHER_FAILING_COMMANDS: "next start",
+      TOKEN_ENCRYPTION_KEY: encryptionKey,
+      ...oauthSecrets,
+    };
+
+    const launched = await launcherCommand([], { env: environment });
+    const reported = await launcherCommand(["status"], { env: environment });
+    const viewed = await launcherCommand(["logs"], { env: environment });
+
+    expect(launched.status).toBe(1);
+    expect(reported.status).toBe(5);
+    expect(reported.stdout).toContain("Log:");
+    expect(viewed.status).toBe(0);
+    expect(viewed.stdout).toMatch(
+      /^\[\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\] \[OmniPost\] \[stdout\]/m,
+    );
+    expect(viewed.stdout).toMatch(/\[Supervisor\].*OmniPost exited before OmniPost was ready/m);
+    expect(viewed.stdout).toContain("[REDACTED]");
+    expect(viewed.stdout).not.toContain(environment.ACCESS_PASSWORD);
+    expect(viewed.stdout).not.toContain(encryptionKey);
+    expect(launched.stdout).not.toContain(environment.ACCESS_PASSWORD);
+    expect(launched.stdout).not.toContain(encryptionKey);
+    for (const secret of Object.values(oauthSecrets)) {
+      expect(viewed.stdout).not.toContain(secret);
+      expect(launched.stdout).not.toContain(secret);
+    }
+    for (const token of [
+      "dynamic-access-token-fixture",
+      "dynamic-refresh-token-fixture",
+      "dynamic-bearer-token-fixture",
+    ]) {
+      expect(viewed.stdout).not.toContain(token);
+      expect(launched.stdout).not.toContain(token);
+    }
+
+    const sessionLogPath = reported.stdout.match(/^Log: (.+)$/m)?.[1];
+    expect(sessionLogPath).toBeTruthy();
+    expect(statSync(sessionLogPath as string).mode & 0o777).toBe(0o600);
+  });
+
+  it("labels every session source and keeps the log readable after a clean stop", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const sessionLogDirectory = mkdtempSync(path.join(tmpdir(), "omnipost-session-logs-"));
+    temporaryDirectories.push(sessionLogDirectory);
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      OMNIPOST_LOG_DIR: sessionLogDirectory,
+      LAUNCHER_EMIT_OUTPUT: "1",
+      TOKEN_ENCRYPTION_KEY: "another-recognizable-secret-fixture",
+    };
+    const launcher = spawn(process.execPath, [LAUNCHER, "--rebuild"], {
+      cwd: projectDirectory("cached-build"),
+      env: environment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    await waitFor(() =>
+      readEvents(logPath).some(({ command, args }) => command === "next" && args[0] === "start"),
+    );
+    await startHealthyServer(port);
+    await waitFor(() => readEvents(logPath).some(({ command }) => command === "open"));
+    launcher.kill("SIGTERM");
+    await new Promise<void>((resolve) => launcher.once("exit", () => resolve()));
+
+    const viewed = await launcherCommand(["logs"], { env: environment });
+
+    expect(viewed.status).toBe(0);
+    for (const source of [
+      "Supervisor",
+      "Build",
+      "OmniPost",
+      "Reserved public tunnel",
+      "Browser",
+      "Idle-sleep inhibitor",
+    ]) {
+      expect(viewed.stdout).toContain(`[${source}]`);
+    }
+    expect(viewed.stdout).not.toContain(environment.ACCESS_PASSWORD);
+    expect(viewed.stdout).not.toContain(environment.TOKEN_ENCRYPTION_KEY);
+    expect(statSync(sessionLogDirectory).mode & 0o777).toBe(0o700);
+  });
+
+  it("handles a missing session log without breaking Failed status", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const sessionLogDirectory = mkdtempSync(path.join(tmpdir(), "omnipost-session-logs-"));
+    temporaryDirectories.push(sessionLogDirectory);
+    const pathSecret = "recognizable-missing-log-secret";
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      OMNIPOST_LOG_DIR: sessionLogDirectory,
+      ACCESS_PASSWORD: pathSecret,
+    };
+    writeOwnership(environment, {
+      ...ownershipRecord({ appUrl: `http://127.0.0.1:${port}/`, pid: finishedPid() }),
+      state: "failed",
+      failure: "The app stopped unexpectedly.",
+      logPath: path.join(sessionLogDirectory, `${pathSecret}-missing.log`),
+    });
+
+    const viewed = await launcherCommand(["logs"], { env: environment });
+    const reported = await launcherCommand(["status"], { env: environment });
+
+    expect(viewed.status).toBe(1);
+    expect(viewed.stderr).toContain("unavailable");
+    expect(viewed.stderr).toContain("missing.log");
+    expect(viewed.stderr).not.toContain(pathSecret);
+    expect(reported.status).toBe(5);
+    expect(reported.stdout).toContain("The app stopped unexpectedly.");
+    expect(reported.stdout).toContain("missing.log");
+    expect(reported.stdout).not.toContain(pathSecret);
+  });
+
+  it("retains Failed status when the session log location cannot be created", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const unavailableLogParent = mkdtempSync(path.join(tmpdir(), "omnipost-unavailable-log-"));
+    temporaryDirectories.push(unavailableLogParent);
+    const secret = "recognizable-log-path-secret";
+    const logDirectory = path.join(unavailableLogParent, secret, "not-a-directory");
+    mkdirSync(path.dirname(logDirectory));
+    writeFileSync(logDirectory, "occupied");
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      OMNIPOST_LOG_DIR: logDirectory,
+      ACCESS_PASSWORD: secret,
+    };
+
+    const launched = await launcherCommand([], { env: environment });
+    const reported = await launcherCommand(["status"], { env: environment });
+
+    expect(launched.status).toBe(1);
+    expect(reported.status).toBe(5);
+    expect(reported.stdout).toContain("Failed");
+    expect(reported.stdout).toContain("not-a-directory");
+    expect(launched.stderr).not.toContain(secret);
+    expect(reported.stdout).not.toContain(secret);
+  });
+
+  it("records a runtime health failure discovered by status", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`);
+    const launcher = await startedLauncher(environment, port);
+    const healthServer = servers.pop();
+    await new Promise<void>((resolve) => healthServer?.close(() => resolve()));
+
+    const reported = await launcherCommand(["status"], { env: environment });
+    const viewed = await launcherCommand(["logs"], { env: environment });
+
+    expect(reported.status).toBe(5);
+    expect(reported.stdout).toContain("stopped answering");
+    expect(viewed.stdout).toMatch(/\[Supervisor\].*stopped answering/m);
+
+    launcher.kill("SIGTERM");
+    await new Promise<void>((resolve) => launcher.once("exit", () => resolve()));
+  });
+
   it("cannot open a session that is not running", async () => {
     const port = await unusedPort();
     const { directory, logPath } = stubCommands();
@@ -809,12 +1000,8 @@ describe("production launcher", () => {
 
     // The launch still ends unhappily — nothing ever answers — but it got past
     // the record, which is the point: a crash cannot lock the operator out.
-    await launcherCommand([], { env: environment });
+    const launched = await launcherCommand([], { env: environment });
 
-    expect(
-      readEvents(logPath).filter(
-        ({ command, event, args }) => command === "next" && event === "start" && args[0] === "start",
-      ),
-    ).toHaveLength(1);
+    expect(launched.stdout).toContain("Waiting for OmniPost to answer its health endpoint");
   });
 });

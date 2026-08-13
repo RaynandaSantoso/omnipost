@@ -152,6 +152,11 @@ Single-context repo. See `docs/adr/` for the decisions behind these terms.
   recorded supervisor is still that same process, and OmniPost still answers —
   so neither a leftover record nor a stranger answering on the port can produce
   it. Failed keeps why, so the launch after a crash can explain it.
+- **Session log** — the durable, per-session account of Launcher supervision
+  and managed-process output. It lives in the operator's macOS log location,
+  labels and timestamps every source, and is redacted before either disk or
+  Terminal sees known secret values. Failed status points to it; the terminal
+  log operation also finds the most recent one after a clean stop.
 
 ## Where decisions live
 

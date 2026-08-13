@@ -17,6 +17,7 @@ import { spawn } from "node:child_process";
 
 import { LauncherError } from "./errors.mjs";
 import { launchOrigin, preflight } from "./preflight.mjs";
+import { createRedactor, createSessionLog, readSessionLog } from "./session-log.mjs";
 import {
   claimOwnership,
   ownerAlive,
@@ -69,9 +70,22 @@ let ready = false;
 
 function spawnCommand(command, args) {
   return spawn(command, args, {
-    stdio: "inherit",
+    stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });
+}
+
+function spawnLogged(name, command, args) {
+  const child = spawnCommand(command, args);
+  session?.logger?.write(name, "stdout", `Starting ${command} ${args.join(" ")}`);
+  if (child.stdout) session?.logger?.capture(name, "stdout", child.stdout, process.stdout);
+  if (child.stderr) session?.logger?.capture(name, "stderr", child.stderr, process.stderr);
+  return child;
+}
+
+function supervisor(stream, text) {
+  session?.logger?.write("Supervisor", stream, text);
+  (stream === "stderr" ? console.error : console.log)(session?.logger?.redact(text) ?? text);
 }
 
 function signalTree(child, signal) {
@@ -99,7 +113,7 @@ function updateSession(changes) {
  * Starting, and say the same thing the operator is watching in the terminal.
  */
 function phase(text) {
-  console.log(text);
+  supervisor("stdout", text);
   updateSession({ phase: text });
 }
 
@@ -110,7 +124,8 @@ function phase(text) {
  */
 function recordFailure(message) {
   if (session?.record.state === "failed") return;
-  updateSession({ state: "failed", phase: null, failure: message });
+  const safeMessage = session?.logger?.redact(message) ?? createRedactor(session.env)(message);
+  updateSession({ state: "failed", phase: null, failure: safeMessage });
 }
 
 /**
@@ -130,7 +145,7 @@ function stop(signal = "SIGTERM") {
 
 function fail(message) {
   if (!stopping) {
-    console.error(message);
+    supervisor("stderr", message);
     recordFailure(message);
   }
   process.exitCode = 1;
@@ -149,7 +164,7 @@ process.on("exit", releaseSession);
  * ends the whole session: OmniPost does not run in a partly working shape.
  */
 function startManaged(name, command, args) {
-  const child = spawnCommand(command, args);
+  const child = spawnLogged(name, command, args);
   const managedProcess = { name, child, exited: false };
   managed.push(managedProcess);
   child.on("error", (error) => {
@@ -171,9 +186,9 @@ function startManaged(name, command, args) {
 }
 
 /** Run a one-shot command to completion, rejecting on a non-zero exit. */
-async function commandResult(command, args) {
-  const child = spawnCommand(command, args);
-  const managedProcess = { name: `${command} ${args.join(" ")}`, child, exited: false };
+async function commandResult(command, args, name = `${command} ${args.join(" ")}`) {
+  const child = spawnLogged(name, command, args);
+  const managedProcess = { name, child, exited: false };
   managed.push(managedProcess);
   return new Promise((resolve, reject) => {
     child.once("error", reject);
@@ -188,7 +203,7 @@ async function commandResult(command, args) {
 }
 
 async function openBrowser(appUrl) {
-  await commandResult("open", [appUrl]);
+  await commandResult("open", [appUrl], "Browser");
 }
 
 async function waitForHealth(env, appUrl) {
@@ -223,6 +238,7 @@ function sessionSummary(record, changes) {
     sessionId: record.sessionId,
     startedAt: record.startedAt,
     appUrl: record.appUrl,
+    logPath: record.logPath,
     ...changes,
   };
 }
@@ -255,9 +271,19 @@ export async function status({ env }) {
     return sessionSummary(record, { state: "starting", phase: record.phase });
   }
   if (await appAnswers(new URL(record.appUrl))) return sessionSummary(record, { state: "running" });
-  return sessionSummary(record, {
+  const failure = `OmniPost has stopped answering at ${record.appUrl}.`;
+  let failedRecord = record;
+  try {
+    const logger = createSessionLog(env, record.sessionId);
+    logger.write("Supervisor", "stderr", failure);
+    failedRecord = updateOwnership(env, record, { state: "failed", phase: null, failure });
+  } catch {
+    // Status is still useful when diagnostics cannot be persisted. The next
+    // call will recompute the same safe failure rather than breaking status.
+  }
+  return sessionSummary(failedRecord, {
     state: "failed",
-    failure: `OmniPost has stopped answering at ${record.appUrl}.`,
+    failure,
   });
 }
 
@@ -271,6 +297,11 @@ export async function open({ env }) {
   if (current.state !== "running") return { ...current, opened: false };
   await openBrowser(current.appUrl);
   return { ...current, opened: true };
+}
+
+/** Read the current or most recent session log without making its location a chore. */
+export function logs({ env }) {
+  return readSessionLog(env, readOwnership(env));
 }
 
 /**
@@ -328,9 +359,16 @@ export async function start({ env, cwd, rebuild }) {
 
   session = { env, record: await takeOwnership(env, appUrl) };
   try {
+    session.logger = createSessionLog(env, session.record.sessionId);
+    session.record = updateOwnership(env, session.record, { logPath: session.logger.logPath });
     return await startSession({ env, cwd, rebuild, appUrl });
   } catch (error) {
-    recordFailure(error instanceof Error ? error.message : String(error));
+    const detail = error instanceof Error ? error.message : String(error);
+    const message = session.logger
+      ? detail
+      : `OmniPost could not create its session log in the configured log location (${detail}).`;
+    session.logger?.write("Supervisor", "stderr", message);
+    recordFailure(message);
     stop();
     throw error;
   }
@@ -339,11 +377,11 @@ export async function start({ env, cwd, rebuild }) {
 async function startSession({ env, cwd, rebuild, appUrl }) {
   const { port, publicOrigin, buildReady } = await preflight({ env, cwd, appUrl });
 
-  console.log("Starting OmniPost:");
-  console.log(`- OmniPost: ${appUrl.href}`);
-  console.log(`- Reserved public tunnel: ${publicOrigin.origin}`);
-  console.log("This Mac will stay awake while OmniPost is running.");
-  console.log("Press Ctrl+C to stop every service.");
+  supervisor("stdout", "Starting OmniPost:");
+  supervisor("stdout", `- OmniPost: ${appUrl.href}`);
+  supervisor("stdout", `- Reserved public tunnel: ${publicOrigin.origin}`);
+  supervisor("stdout", "This Mac will stay awake while OmniPost is running.");
+  supervisor("stdout", "Press Ctrl+C to stop every service.");
 
   // Held first, so neither a long build nor a health wait is interrupted by
   // idle sleep. It is released on every way out of this session.
@@ -351,9 +389,9 @@ async function startSession({ env, cwd, rebuild, appUrl }) {
 
   if (rebuild || !buildReady) {
     phase(rebuild ? "Rebuilding OmniPost for production" : "Building OmniPost for production");
-    await commandResult("next", ["build"]);
+    await commandResult("next", ["build"], "Build");
   } else {
-    console.log("Using the existing production build. Pass --rebuild after changing code.");
+    supervisor("stdout", "Using the existing production build. Pass --rebuild after changing code.");
   }
   if (stopping) return await status({ env });
 
@@ -371,7 +409,7 @@ async function startSession({ env, cwd, rebuild, appUrl }) {
 
   ready = true;
   updateSession({ state: "running", phase: null });
-  console.log("OmniPost is ready.");
+  supervisor("stdout", "OmniPost is ready.");
   await openBrowser(appUrl.href);
   return { ...sessionSummary(session.record, { state: "running" }), started: true, opened: true };
 }
