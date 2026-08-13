@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "node scripts/dev-all.mjs",
     "dev:app": "node scripts/dev-app.mjs",
-    "launch": "node scripts/launch.mjs",
+    "launch": "node scripts/launch.mjs start",
+    "launch:status": "node scripts/launch.mjs status",
+    "launch:open": "node scripts/launch.mjs open",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",

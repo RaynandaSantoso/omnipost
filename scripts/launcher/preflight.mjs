@@ -4,12 +4,13 @@
 // reserved tunnel, and idle-sleep prevention. If any prerequisite is wrong, the
 // operator must learn it here — while nothing is running — rather than see a
 // healthy public tunnel in front of an app that refused to boot. So nothing in
-// this module spawns a process: it reads configuration, the filesystem, and the
-// local port. Its one write is the runtime directory it has to prove writable.
-import { accessSync, constants, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+// this module starts, writes, or changes anything: it only reads configuration,
+// the filesystem, and the local port.
+import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import { connect } from "node:net";
-import { homedir } from "node:os";
 import path from "node:path";
+
+import { LauncherError } from "./errors.mjs";
 
 // Kept in step with MIN_ACCESS_PASSWORD_LENGTH in src/lib/config.ts, which the
 // launcher cannot import across the .mjs/TypeScript boundary; a test asserts the
@@ -28,42 +29,19 @@ const CALLBACK_PATHS = [
 ];
 
 /**
- * A named, actionable prerequisite failure. Its message identifies the setting,
- * command, path, or port at fault and never carries a configured value, so it
- * stays safe to print and log.
- */
-export class PreflightError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "PreflightError";
-  }
-}
-
-// Where the Launcher's own state and logs belong: per-user, outside the
-// repository. Preflight only proves it writable — later slices put session
-// state and logs there.
-function runtimeDirectory(env) {
-  return (
-    env("OMNIPOST_RUNTIME_DIR") ||
-    path.join(homedir(), "Library", "Application Support", "OmniPost")
-  );
-}
-
-/**
  * The local origin the production app is served on. Exported because a launch
- * probes that origin before preflight runs — an already-answering session is
- * reopened rather than validated — and both paths must read the same setting
- * the same way.
+ * needs it before preflight runs — session ownership records the origin it is
+ * claiming — and both paths must read the same setting the same way.
  */
 export function launchOrigin(value) {
   let appUrl;
   try {
     appUrl = new URL(value);
   } catch {
-    throw new PreflightError("OMNIPOST_LAUNCH_URL must be a valid HTTP URL.");
+    throw new LauncherError("OMNIPOST_LAUNCH_URL must be a valid HTTP URL.");
   }
   if (!["http:", "https:"].includes(appUrl.protocol) || appUrl.pathname !== "/") {
-    throw new PreflightError("OMNIPOST_LAUNCH_URL must be an HTTP origin without a path.");
+    throw new LauncherError("OMNIPOST_LAUNCH_URL must be an HTTP origin without a path.");
   }
   return appUrl;
 }
@@ -71,14 +49,14 @@ export function launchOrigin(value) {
 function requiredAccessPassword(env) {
   const password = env("ACCESS_PASSWORD");
   if (!password) {
-    throw new PreflightError(
+    throw new LauncherError(
       "ACCESS_PASSWORD is required when PUBLIC_BASE_URL is configured: the public " +
         "origin is reachable from the internet, so the password gate is what keeps " +
         "publishing rights yours. Add it to .env.",
     );
   }
   if (password.length < MIN_ACCESS_PASSWORD_LENGTH) {
-    throw new PreflightError(
+    throw new LauncherError(
       `ACCESS_PASSWORD must be at least ${MIN_ACCESS_PASSWORD_LENGTH} characters, ` +
         "because it is the only thing defending a public origin. OmniPost would " +
         "refuse to boot with the one in .env.",
@@ -89,14 +67,14 @@ function requiredAccessPassword(env) {
 function requiredPublicOrigin(env) {
   const publicBaseUrl = env("PUBLIC_BASE_URL");
   if (!publicBaseUrl) {
-    throw new PreflightError("PUBLIC_BASE_URL is required by the OmniPost Launcher.");
+    throw new LauncherError("PUBLIC_BASE_URL is required by the OmniPost Launcher.");
   }
 
   let publicOrigin;
   try {
     publicOrigin = new URL(publicBaseUrl);
   } catch {
-    throw new PreflightError("PUBLIC_BASE_URL must be a valid URL.");
+    throw new LauncherError("PUBLIC_BASE_URL must be a valid URL.");
   }
   if (
     publicOrigin.protocol !== "https:" ||
@@ -108,7 +86,7 @@ function requiredPublicOrigin(env) {
     publicOrigin.username ||
     publicOrigin.password
   ) {
-    throw new PreflightError(
+    throw new LauncherError(
       "PUBLIC_BASE_URL must be an HTTPS origin without a path, query, fragment, or credentials.",
     );
   }
@@ -123,7 +101,7 @@ function callbackOrigins(env, publicOrigin) {
     try {
       redirect = new URL(redirectUri);
     } catch {
-      throw new PreflightError(`${name} must be a valid URL.`);
+      throw new LauncherError(`${name} must be a valid URL.`);
     }
     if (
       redirect.origin !== publicOrigin.origin ||
@@ -135,7 +113,7 @@ function callbackOrigins(env, publicOrigin) {
       redirect.username ||
       redirect.password
     ) {
-      throw new PreflightError(
+      throw new LauncherError(
         `${name} must use PUBLIC_BASE_URL and end exactly in ${callbackPath}.`,
       );
     }
@@ -160,25 +138,10 @@ function executableOnPath(name, env) {
 function requiredCommands(env) {
   for (const name of REQUIRED_COMMANDS) {
     if (executableOnPath(name, env)) continue;
-    throw new PreflightError(
+    throw new LauncherError(
       `${name} is required by the OmniPost Launcher but was not found on PATH. ` +
         "Install it, then launch again.",
     );
-  }
-}
-
-function writableRuntimeStorage(directory) {
-  const probe = path.join(directory, ".preflight");
-  try {
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
-    writeFileSync(probe, "", { mode: 0o600 });
-  } catch (error) {
-    throw new PreflightError(
-      `OmniPost cannot write its runtime state to ${directory} ` +
-        `(${error?.code ?? error?.message}). Grant write access to that location, then launch again.`,
-    );
-  } finally {
-    rmSync(probe, { force: true });
   }
 }
 
@@ -219,7 +182,7 @@ function productionBuildReady(cwd) {
 
 /**
  * Validate every prerequisite of a production session and describe the session
- * that may then be started. Throws PreflightError naming the first prerequisite
+ * that may then be started. Throws LauncherError naming the first prerequisite
  * that fails; starts nothing either way.
  */
 export async function preflight({ env, cwd, appUrl }) {
@@ -227,11 +190,10 @@ export async function preflight({ env, cwd, appUrl }) {
   requiredAccessPassword(env);
   callbackOrigins(env, publicOrigin);
   requiredCommands(env);
-  writableRuntimeStorage(runtimeDirectory(env));
 
   const port = appUrl.port || (appUrl.protocol === "https:" ? "443" : "80");
   if (await portInUse(appUrl.hostname, Number(port))) {
-    throw new PreflightError(
+    throw new LauncherError(
       `Port ${port} is already in use by another process, and OmniPost is not ` +
         "answering there. Stop that process, or point OMNIPOST_LAUNCH_URL at a free port.",
     );

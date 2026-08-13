@@ -1,6 +1,7 @@
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -10,7 +11,7 @@ import {
 } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { createServer as createSocketServer, type Server as SocketServer } from "node:net";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { MIN_ACCESS_PASSWORD_LENGTH } from "@/lib/config";
@@ -134,6 +135,103 @@ function launcherEnvironment(directory: string, logPath: string, appUrl: string)
     INSTAGRAM_REDIRECT_URI: "",
   };
 }
+
+const LAUNCHER = path.join(process.cwd(), "scripts/launch.mjs");
+
+// Awaited rather than run synchronously, because a launcher command may need
+// this process to answer the health endpoint while it runs.
+function launcherCommand(
+  args: string[],
+  { env, cwd = projectDirectory("cached-build") }: { env: NodeJS.ProcessEnv; cwd?: string },
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  const child = spawn(process.execPath, [LAUNCHER, ...args], {
+    cwd,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
+/** A launcher left running with its session up: app healthy, browser opened. */
+async function startedLauncher(environment: NodeJS.ProcessEnv, port: number) {
+  const logPath = environment.LAUNCHER_LOG as string;
+  const launcher = spawn(process.execPath, [LAUNCHER], {
+    cwd: projectDirectory("cached-build"),
+    env: environment,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  await waitFor(() =>
+    readEvents(logPath).some(({ command, args }) => command === "next" && args[0] === "start"),
+  );
+  await startHealthyServer(port);
+  await waitFor(() => readEvents(logPath).some(({ command }) => command === "open"));
+  return launcher;
+}
+
+function writeOwnership(environment: NodeJS.ProcessEnv, record: object | string) {
+  writeFileSync(
+    path.join(environment.OMNIPOST_RUNTIME_DIR as string, "session.json"),
+    typeof record === "string" ? record : JSON.stringify(record),
+  );
+}
+
+function finishedPid(): number {
+  return spawnSync(process.execPath, ["-e", ""]).pid;
+}
+
+function ownershipRecord({ appUrl, pid }: { appUrl: string; pid: number }) {
+  return {
+    sessionId: "11111111-2222-3333-4444-555555555555",
+    pid,
+    // The recorded start time of a process that has since exited, or that never
+    // had this process id in the first place.
+    processStartTime: "Mon Jan  1 00:00:00 2024",
+    startedAt: "2024-01-01T00:00:00.000Z",
+    state: "running",
+    appUrl,
+  };
+}
+
+/** The start time the operating system really reports for a live process. */
+function liveProcessStartTime(pid: number): string {
+  return execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
+    encoding: "utf8",
+  }).trim();
+}
+
+// Every way an ownership record can be present without being evidence of a
+// live session: a crashed owner, a process id the operating system handed to
+// somebody else, a write that was cut in half, and a file OmniPost never wrote.
+const untrustworthyRecords: { name: string; record: (appUrl: string) => object | string }[] = [
+  {
+    name: "ownership left by an owner that is gone",
+    record: (appUrl) => ownershipRecord({ appUrl, pid: finishedPid() }),
+  },
+  {
+    name: "ownership naming a recycled process id",
+    record: (appUrl) => ownershipRecord({ appUrl, pid: process.pid }),
+  },
+  {
+    // Its owner really is alive: only the missing fields say it was not this
+    // Launcher that wrote it.
+    name: "a record missing what identifies a session",
+    record: (appUrl) => ({
+      pid: process.pid,
+      processStartTime: liveProcessStartTime(process.pid),
+      state: "running",
+      appUrl,
+    }),
+  },
+  { name: "a half-written record", record: (appUrl) => `{"appUrl":"${appUrl}","pid` },
+  { name: "a record written by something else", record: () => ({ note: "not a session" }) },
+];
 
 describe("production launcher", () => {
   afterEach(async () => {
@@ -507,28 +605,216 @@ describe("production launcher", () => {
     ).toEqual(["caffeinate"]);
   });
 
-  it("only brings the browser forward when the app is already answering", async () => {
+  it("refuses to launch over an app it does not own", async () => {
     const port = await unusedPort();
     await startHealthyServer(port);
     const { directory, logPath } = stubCommands();
-    const appUrl = `http://127.0.0.1:${port}`;
-    const launcher = spawn(process.execPath, ["scripts/launch.mjs"], {
-      cwd: process.cwd(),
-      env: {
-        ...launcherEnvironment(directory, logPath, appUrl),
-        PUBLIC_BASE_URL: "",
-        ACCESS_PASSWORD: "",
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const status = await new Promise<number | null>((resolve, reject) => {
-      launcher.once("exit", (code) => resolve(code));
-      launcher.once("error", reject);
+    const result = await launcherCommand([], {
+      env: launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
     });
 
-    expect(status).toBe(0);
-    expect(readEvents(logPath)).toEqual([
-      { command: "open", event: "start", args: [`${appUrl}/`] },
+    // Something answering on the port is not evidence that OmniPost is there,
+    // so the port is an occupant to report rather than a session to adopt.
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(String(port));
+    expect(readEvents(logPath)).toEqual([]);
+  });
+
+  it("reopens the session it owns instead of starting a second one", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`);
+    const launcher = await startedLauncher(environment, port);
+    const startedEvents = readEvents(logPath).length;
+
+    const again = await launcherCommand([], { env: environment });
+    const reported = await launcherCommand(["status"], { env: environment });
+    expect(again.status).toBe(0);
+    expect(again.stdout).toContain("already running");
+    expect(readEvents(logPath).slice(startedEvents)).toEqual([
+      { command: "open", event: "start", args: [`http://127.0.0.1:${port}/`] },
     ]);
+    expect(reported.status).toBe(0);
+    expect(reported.stdout).toContain("Running");
+
+    launcher.kill("SIGTERM");
+    await new Promise<void>((resolve) => launcher.once("exit", () => resolve()));
+
+    // Ownership is given up with the session, so the next launch is not left
+    // arguing with a record nobody owns.
+    const afterStop = await launcherCommand(["status"], { env: environment });
+    expect(afterStop.stdout).toContain("Stopped");
+    expect(afterStop.status).toBe(4);
+  });
+
+  it("opens the owned session on request and keeps its record to itself", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`);
+    const launcher = await startedLauncher(environment, port);
+    const startedEvents = readEvents(logPath).length;
+
+    const opened = await launcherCommand(["open"], { env: environment });
+
+    expect(opened.status).toBe(0);
+    expect(readEvents(logPath).slice(startedEvents)).toEqual([
+      { command: "open", event: "start", args: [`http://127.0.0.1:${port}/`] },
+    ]);
+    expect(statSync(path.join(environment.OMNIPOST_RUNTIME_DIR, "session.json")).mode & 0o777)
+      .toBe(0o600);
+
+    launcher.kill("SIGTERM");
+    await new Promise<void>((resolve) => launcher.once("exit", () => resolve()));
+  });
+
+  it("keeps its runtime state in the operator's application-support location", async () => {
+    const { runtimeDirectory } = await import("../scripts/launcher/session-state.mjs");
+
+    expect(runtimeDirectory(() => undefined)).toBe(
+      path.join(homedir(), "Library", "Application Support", "OmniPost"),
+    );
+  });
+
+  it("gives one of two simultaneous launches the session and turns the other away", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      OMNIPOST_LAUNCH_TIMEOUT_MS: "750",
+    };
+
+    // Several at once rather than two, because losing the claim is a race and
+    // more racers make a regression more likely to show.
+    const launches = await Promise.all(
+      Array.from({ length: 4 }, () => launcherCommand([], { env: environment })),
+    );
+
+    // Whichever of them won, exactly one session was ever started: two
+    // supervisors holding the same port and the same reserved tunnel is the
+    // outcome ownership exists to prevent.
+    const sessions = readEvents(logPath).filter(
+      ({ command, event }) => command === "caffeinate" && event === "start",
+    );
+    expect(sessions).toHaveLength(1);
+    expect(launches.map(({ status }) => status)).toEqual([1, 1, 1, 1]);
+    expect(launches.map(({ stderr }) => stderr).join("")).toMatch(
+      /already owns this Mac|Starting/,
+    );
+  });
+
+  it("refuses a second launch and reports the phase while the first is still starting", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      OMNIPOST_LAUNCH_TIMEOUT_MS: "10000",
+    };
+    const launcher = spawn(process.execPath, [LAUNCHER], {
+      cwd: projectDirectory("cached-build"),
+      env: environment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    await waitFor(() =>
+      readEvents(logPath).some(({ command, args }) => command === "next" && args[0] === "start"),
+    );
+    const startedEvents = readEvents(logPath).length;
+
+    const second = await launcherCommand([], { env: environment });
+    const reported = await launcherCommand(["status"], { env: environment });
+
+    expect(second.status).toBe(1);
+    expect(second.stderr).toContain("Starting");
+    expect(readEvents(logPath)).toHaveLength(startedEvents);
+    expect(reported.status).toBe(3);
+    expect(reported.stdout).toContain("Starting");
+    expect(reported.stdout).toContain("health endpoint");
+
+    launcher.kill("SIGTERM");
+    await new Promise<void>((resolve) => launcher.once("exit", () => resolve()));
+  });
+
+  it("keeps a failed session's reason for the status that follows it", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      OMNIPOST_LAUNCH_TIMEOUT_MS: "750",
+    };
+
+    const result = await launcherCommand([], { env: environment });
+    const reported = await launcherCommand(["status"], { env: environment });
+
+    expect(result.status).toBe(1);
+    expect(reported.status).toBe(5);
+    expect(reported.stdout).toContain("Failed");
+    expect(reported.stdout).toContain("did not answer");
+  });
+
+  it("cannot open a session that is not running", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const result = await launcherCommand(["open"], {
+      env: launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Stopped");
+    expect(readEvents(logPath)).toEqual([]);
+  });
+
+  it.each(untrustworthyRecords)(
+    "never reports $name as Running, however healthy the port looks",
+    async ({ record }) => {
+      const port = await unusedPort();
+      await startHealthyServer(port);
+      const { directory, logPath } = stubCommands();
+      const environment = launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`);
+      writeOwnership(environment, record(`http://127.0.0.1:${port}/`));
+
+      const reported = await launcherCommand(["status"], { env: environment });
+
+      expect(reported.stdout).not.toContain("Running");
+      expect(reported.status).not.toBe(0);
+    },
+  );
+
+  it("will not discard ownership while something it left behind is still serving", async () => {
+    const port = await unusedPort();
+    await startHealthyServer(port);
+    const { directory, logPath } = stubCommands();
+    const environment = launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`);
+    writeOwnership(
+      environment,
+      ownershipRecord({ appUrl: `http://127.0.0.1:${port}/`, pid: finishedPid() }),
+    );
+
+    const result = await launcherCommand([], { env: environment });
+
+    // The owner is gone, so the record is stale — but an orphan is still
+    // answering for it, and that is worth naming rather than launching over.
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`http://127.0.0.1:${port}/`);
+    expect(readEvents(logPath)).toEqual([]);
+    expect(existsSync(path.join(environment.OMNIPOST_RUNTIME_DIR, "session.json"))).toBe(true);
+  });
+
+  it.each(untrustworthyRecords)("launches past $name", async ({ record }) => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      OMNIPOST_LAUNCH_TIMEOUT_MS: "750",
+    };
+    writeOwnership(environment, record(`http://127.0.0.1:${port}/`));
+
+    // The launch still ends unhappily — nothing ever answers — but it got past
+    // the record, which is the point: a crash cannot lock the operator out.
+    await launcherCommand([], { env: environment });
+
+    expect(
+      readEvents(logPath).filter(
+        ({ command, event, args }) => command === "next" && event === "start" && args[0] === "start",
+      ),
+    ).toHaveLength(1);
   });
 });

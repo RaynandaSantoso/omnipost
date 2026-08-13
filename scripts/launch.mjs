@@ -1,27 +1,10 @@
-// The daily-use production Launcher: one command that owns the whole OmniPost
-// runtime — the production app, the reserved ngrok tunnel, and idle-sleep
-// prevention — as a single session (ADR-0004).
-//
-// The order below is the point. Preflight validates every prerequisite while
-// nothing is running (scripts/launcher/preflight.mjs), the app is started and
-// health-checked before the public tunnel exists, and the browser opens only
-// once the app answers and every required process is still alive. If any step
-// fails, everything already started is stopped, so the operator never sees a
-// public entry point in front of an app that is not there.
-import { spawn } from "node:child_process";
+// The terminal adapter for the Launcher lifecycle: `start`, `status`, and
+// `open` (ADR-0004). It reads the operator's environment, prints what happened,
+// and turns the lifecycle state into an exit status — every decision about what
+// a session is and whether it may start belongs to scripts/launcher/.
 import { readFileSync } from "node:fs";
 
-import { launchOrigin, preflight } from "./launcher/preflight.mjs";
-
-const DEFAULT_APP_URL = "http://localhost:3000";
-const DEFAULT_READY_TIMEOUT_MS = 120_000;
-const HEALTH_POLL_INTERVAL_MS = 250;
-// How long a companion process must survive before it counts as started. ngrok
-// fails by exiting immediately (an unauthenticated agent, a domain already
-// claimed), and that must be caught before the browser opens. A process that
-// dies after this window still ends the session — it just does so after the
-// tab is open, because liveness is all this session can ask of a tunnel.
-const COMPANION_SETTLE_MS = 500;
+import { open, start, status } from "./launcher/lifecycle.mjs";
 
 function readEnvFile(path) {
   try {
@@ -51,193 +34,72 @@ const fileEnv = {
 };
 const envValue = (name) => process.env[name] ?? fileEnv[name];
 
-async function appAnswers(appUrl) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 750);
-  try {
-    await fetch(new URL("/api/health", appUrl), {
-      cache: "no-store",
-      signal: controller.signal,
+// Everything this adapter says about a lifecycle state, in one place: what to
+// call it, what `status` exits with so a script can branch on the state without
+// reading English, and what to tell someone who wanted a page to open. (`start`
+// and `open` are ordinary commands: they succeeded or they did not.)
+const STATES = {
+  running: { label: "Running", exit: 0 },
+  starting: {
+    label: "Starting",
+    exit: 3,
+    advice: "Wait for it to finish starting, then try again.",
+  },
+  stopped: { label: "Stopped", exit: 4, advice: "Start OmniPost with `npm run launch`." },
+  failed: { label: "Failed", exit: 5, advice: "Start OmniPost with `npm run launch`." },
+};
+
+function describe(result) {
+  const lines = [`OmniPost is ${STATES[result.state].label}.`];
+  if (result.phase) lines.push(`Phase: ${result.phase}`);
+  if (result.sessionId) lines.push(`Session: ${result.sessionId}`);
+  if (result.startedAt) lines.push(`Started: ${result.startedAt}`);
+  if (result.appUrl) lines.push(`Address: ${result.appUrl}`);
+  if (result.failure) lines.push(`Failure: ${result.failure}`);
+  return lines.join("\n");
+}
+
+const commands = {
+  async start() {
+    const result = await start({
+      env: envValue,
+      cwd: process.cwd(),
+      rebuild: process.argv.includes("--rebuild"),
     });
-    return true;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
+    if (result.state !== "running") {
+      console.error(describe(result));
+      return 1;
+    }
+    if (!result.started) console.log("OmniPost is already running; bringing its tab forward.");
+    return 0;
+  },
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+  async status() {
+    const result = await status({ env: envValue });
+    console.log(describe(result));
+    return STATES[result.state].exit;
+  },
 
-const managed = [];
-let stopping = false;
-let ready = false;
-
-function spawnCommand(command, args) {
-  return spawn(command, args, {
-    stdio: "inherit",
-    detached: process.platform !== "win32",
-  });
-}
-
-function signalTree(child, signal) {
-  if (!child.pid || child.killed) return;
-  try {
-    if (process.platform !== "win32") process.kill(-child.pid, signal);
-    else child.kill(signal);
-  } catch (error) {
-    if (error?.code !== "ESRCH") throw error;
-  }
-}
-
-function stop(signal = "SIGTERM") {
-  if (stopping) return;
-  stopping = true;
-  for (const { child } of managed) signalTree(child, signal);
-}
-
-function fail(message) {
-  if (!stopping) console.error(message);
-  process.exitCode = 1;
-  stop();
-}
-
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => stop(signal));
-}
-
-/**
- * Start a process this session owns. A required process that exits on its own
- * ends the whole session: OmniPost does not run in a partly working shape.
- */
-function startManaged(name, command, args) {
-  const child = spawnCommand(command, args);
-  const record = { name, child, exited: false };
-  managed.push(record);
-  child.on("error", (error) => {
-    record.exited = true;
-    fail(`Could not start ${name}: ${error.message}`);
-  });
-  child.on("exit", () => {
-    record.exited = true;
-    const index = managed.indexOf(record);
-    if (index >= 0) managed.splice(index, 1);
-    if (stopping) return;
-    fail(
-      ready
-        ? `${name} exited, so OmniPost is stopping the rest of this session.`
-        : `${name} exited before OmniPost was ready.`,
-    );
-  });
-  return record;
-}
-
-/** Run a one-shot command to completion, rejecting on a non-zero exit. */
-async function commandResult(command, args) {
-  const child = spawnCommand(command, args);
-  const record = { name: `${command} ${args.join(" ")}`, child, exited: false };
-  managed.push(record);
-  return new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code, signal) => {
-      record.exited = true;
-      const index = managed.indexOf(record);
-      if (index >= 0) managed.splice(index, 1);
-      if (code === 0) resolve();
-      else reject(new Error(`${command} ${args.join(" ")} exited with ${code ?? signal}`));
-    });
-  });
-}
-
-async function openBrowser(appUrl) {
-  await commandResult("open", [appUrl.href]);
-}
-
-async function waitForHealth(appUrl) {
-  const configuredTimeout = Number(envValue("OMNIPOST_LAUNCH_TIMEOUT_MS"));
-  const timeoutMs =
-    Number.isFinite(configuredTimeout) && configuredTimeout > 0
-      ? configuredTimeout
-      : DEFAULT_READY_TIMEOUT_MS;
-  const deadline = Date.now() + timeoutMs;
-  while (!stopping && Date.now() < deadline) {
-    if (await appAnswers(appUrl)) return true;
-    await delay(HEALTH_POLL_INTERVAL_MS);
-  }
-  if (!stopping) {
-    fail(`OmniPost did not answer at ${appUrl.href} within ${timeoutMs}ms.`);
-  }
-  return false;
-}
-
-/** Wait out the settle window, so a companion that dies at once is caught. */
-async function stayedAlive(record) {
-  const deadline = Date.now() + COMPANION_SETTLE_MS;
-  while (Date.now() < deadline) {
-    if (stopping || record.exited) return false;
-    await delay(25);
-  }
-  return !stopping && !record.exited;
-}
+  async open() {
+    const result = await open({ env: envValue });
+    if (result.opened) return 0;
+    console.error(`${describe(result)}\n${STATES[result.state].advice}`);
+    return 1;
+  },
+};
 
 async function main() {
-  const appUrl = launchOrigin(envValue("OMNIPOST_LAUNCH_URL") || DEFAULT_APP_URL);
-
-  // A second launch against a session that is already answering is just a
-  // request to come back to the dashboard.
-  if (await appAnswers(appUrl)) {
-    await openBrowser(appUrl);
+  const [name = "start"] = process.argv.slice(2).filter((argument) => !argument.startsWith("--"));
+  const command = commands[name];
+  if (!command) {
+    console.error(`Unknown Launcher command: ${name}. Use ${Object.keys(commands).join(", ")}.`);
+    process.exitCode = 1;
     return;
   }
-
-  const { port, publicOrigin, buildReady } = await preflight({
-    env: envValue,
-    cwd: process.cwd(),
-    appUrl,
-  });
-
-  console.log("Starting OmniPost:");
-  console.log(`- OmniPost: ${appUrl.href}`);
-  console.log(`- Reserved public tunnel: ${publicOrigin.origin}`);
-  console.log("This Mac will stay awake while OmniPost is running.");
-  console.log("Press Ctrl+C to stop every service.");
-
-  // Held first, so neither a long build nor a health wait is interrupted by
-  // idle sleep. It is released on every way out of this session.
-  startManaged("Idle-sleep inhibitor", "caffeinate", ["-i"]);
-
-  const rebuildRequested = process.argv.includes("--rebuild");
-  if (rebuildRequested || !buildReady) {
-    console.log(
-      rebuildRequested
-        ? "Rebuilding OmniPost for production..."
-        : "Building OmniPost for production...",
-    );
-    await commandResult("next", ["build"]);
-  } else {
-    console.log("Using the existing production build. Pass --rebuild after changing code.");
-  }
-  if (stopping) return;
-
-  console.log("Waiting for OmniPost to answer its health endpoint...");
-  startManaged("OmniPost", "next", ["start", "-p", port]);
-  if (!(await waitForHealth(appUrl))) return;
-
-  console.log(`Opening the reserved public tunnel at ${publicOrigin.origin}...`);
-  const tunnel = startManaged("Reserved public tunnel", "ngrok", [
-    "http",
-    `--url=${publicOrigin.hostname}`,
-    port,
-  ]);
-  if (!(await stayedAlive(tunnel))) return;
-
-  ready = true;
-  console.log("OmniPost is ready.");
-  await openBrowser(appUrl);
+  process.exitCode = await command();
 }
 
 main().catch((error) => {
-  fail(error instanceof Error ? error.message : String(error));
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
 });

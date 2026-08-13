@@ -135,11 +135,23 @@ Single-context repo. See `docs/adr/` for the decisions behind these terms.
   one. Distinct from `npm run dev` on purpose — that is for changing
   OmniPost, this is for using it.
 - **Preflight** — the checks the Launcher runs before it starts anything:
-  configuration, required commands, writable per-user runtime storage, a free
-  local port, and a usable production build. It is a phase rather than a
-  helper because the failure it prevents is a *misleading* one — a public
-  tunnel answering in front of an app that refused to boot. Everything it
-  reports is therefore known while nothing is running.
+  configuration, required commands, a free local port, and a usable production
+  build. It is a phase rather than a helper because the failure it prevents is a
+  *misleading* one — a public tunnel answering in front of an app that refused
+  to boot. Everything it reports is therefore known while nothing is running.
+  Per-user runtime storage is not on its list because claiming the session
+  proves that location writable already, and a claim has to come first.
+- **Launcher session** — one production runtime the Launcher owns: the app, the
+  reserved tunnel, and idle-sleep prevention, started together and ended
+  together. There is at most one per operator, claimed through an ownership
+  record in the per-user runtime location. The record names the supervising
+  process *and* the operating system's start time for it, because a process id
+  outlives its process and may be handed to something unrelated.
+- **Lifecycle state** — what a Launcher session is doing: Starting, Running,
+  Stopped, or Failed. Running is a claim about two verified facts — the
+  recorded supervisor is still that same process, and OmniPost still answers —
+  so neither a leftover record nor a stranger answering on the port can produce
+  it. Failed keeps why, so the launch after a crash can explain it.
 
 ## Where decisions live
 

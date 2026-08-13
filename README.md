@@ -55,12 +55,13 @@ the repository. The Launcher opens a Terminal-owned production session.
 Keep the Terminal window open for logs; press `Ctrl+C` there to stop the app
 and tunnel together.
 
-Before starting anything, the Launcher checks the whole session: the public
-origin and its access password, the platform callback URLs, the `next`,
-`ngrok`, `caffeinate` and `open` commands, a writable per-user runtime location
-(`~/Library/Application Support/OmniPost`, overridable with
-`OMNIPOST_RUNTIME_DIR`), and whether the local port is free. A failed check
-names the prerequisite and starts no app, tunnel, or sleep inhibitor.
+Before starting anything, the Launcher checks the whole session: it claims the
+session in a per-user runtime location (`~/Library/Application Support/OmniPost`,
+overridable with `OMNIPOST_RUNTIME_DIR`), which is also what proves that
+location writable, then checks the public origin and its access password, the
+platform callback URLs, the `next`, `ngrok`, `caffeinate` and `open` commands,
+and whether the local port is free. A failed check names the prerequisite and
+starts no app, tunnel, or sleep inhibitor.
 
 Once the checks pass it holds off idle sleep, builds OmniPost when no usable
 production build exists, starts the app, and waits for its health endpoint. The
@@ -69,10 +70,31 @@ points at an app that is not there — and the browser tab opens last. If the
 health wait times out or a companion process fails to start, everything already
 started is stopped and the command exits non-zero.
 
-Launching it again while OmniPost is answering only brings its browser tab
-forward. The same production session can be started from a terminal with
-`npm run launch`. After changing code, stop the session and force a fresh build
-with `npm run launch -- --rebuild`.
+### Launcher commands
+
+The same lifecycle is available from a terminal, and the macOS app uses nothing
+else:
+
+```sh
+npm run launch            # start the session (add -- --rebuild to force a build)
+npm run launch:status     # what the session is doing
+npm run launch:open       # bring the browser tab forward
+```
+
+There is at most one session per operator. Launching again while it is Running
+starts nothing and only brings the browser tab forward; launching while another
+one is still starting refuses rather than competing with it. `status` reports
+**Starting** (with the current phase), **Running**, **Stopped**, or **Failed**
+(with the reason the last session ended), and exits `0`, `3`, `4`, or `5`
+respectively so scripts can branch on the state. `start` and `open` exit `0`
+when they did what was asked and `1` otherwise.
+
+Running is never assumed from a leftover file or from something answering on
+the port: it means the recorded supervising process is still that same process
+*and* OmniPost still answers. Ownership lives in `session.json` under the
+runtime location, written atomically and readable only by you. A session that
+crashed leaves its record behind so the next `status` can explain it, and the
+next launch clears it — a crash never locks you out.
 
 ## Local development (without Docker)
 
