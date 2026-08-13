@@ -125,10 +125,17 @@ again reveals the existing menu-bar instance: a stopped session starts, while
 a running session brings OmniPost forward in the browser.
 
 Use **Open OmniPost** to return to the dashboard and **View Logs** to open the
-current redacted session log in the normal macOS log viewer. Closing the
-browser does not stop OmniPost. The terminal Launcher commands above remain
-available for scripting, and `npm run dev` and `npm run dev:app` remain
-independent development entry points.
+current redacted session log in the normal macOS log viewer. **Stop OmniPost**
+gracefully drains active work, and **Restart** waits for that verified cleanup
+before starting again. During a transition, lifecycle actions are disabled.
+
+If the graceful wait expires, choose **Keep Waiting** or deliberately confirm
+**Force Stop**; interrupted work recovers through its existing Lease and
+Transfer state. **Quit** first stops the complete runtime and exits only after
+cleanup. Cancelling a quit or timeout dialog keeps the menu-bar owner available.
+Closing the browser does not stop OmniPost. The terminal Launcher commands
+above remain available for scripting, and `npm run dev` and `npm run dev:app`
+remain independent development entry points.
 
 ## Local development (without Docker)
 

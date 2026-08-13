@@ -8,8 +8,12 @@ private struct BridgeMessage: Decodable {
     let detail: String?
     let openEnabled: Bool?
     let logsEnabled: Bool?
+    let stopEnabled: Bool?
+    let restartEnabled: Bool?
+    let quitEnabled: Bool?
     let path: String?
     let message: String?
+    let recovery: String?
 }
 
 @main
@@ -19,10 +23,14 @@ final class OmniPostLauncher: NSObject, NSApplicationDelegate {
     private let detailItem = NSMenuItem(title: "Connecting to Launcher…", action: nil, keyEquivalent: "")
     private let openItem = NSMenuItem(title: "Open OmniPost", action: #selector(openOmniPost), keyEquivalent: "o")
     private let logsItem = NSMenuItem(title: "View Logs", action: #selector(viewLogs), keyEquivalent: "l")
+    private let restartItem = NSMenuItem(title: "Restart", action: #selector(restartOmniPost), keyEquivalent: "r")
+    private let stopItem = NSMenuItem(title: "Stop OmniPost", action: #selector(stopOmniPost), keyEquivalent: "")
+    private let quitItem = NSMenuItem(title: "Quit", action: #selector(requestQuit), keyEquivalent: "q")
     private var bridge: Process?
     private var bridgeInput: FileHandle?
     private var bufferedOutput = Data()
     private var refreshTimer: Timer?
+    private var quitApproved = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -46,6 +54,12 @@ final class OmniPostLauncher: NSObject, NSApplicationDelegate {
         openItem.isEnabled = false
         logsItem.target = self
         logsItem.isEnabled = false
+        restartItem.target = self
+        restartItem.isEnabled = false
+        stopItem.target = self
+        stopItem.isEnabled = false
+        quitItem.target = self
+        quitItem.isEnabled = false
 
         let menu = NSMenu()
         menu.addItem(stateItem)
@@ -53,6 +67,11 @@ final class OmniPostLauncher: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(openItem)
         menu.addItem(logsItem)
+        menu.addItem(.separator())
+        menu.addItem(restartItem)
+        menu.addItem(stopItem)
+        menu.addItem(.separator())
+        menu.addItem(quitItem)
         statusItem.menu = menu
     }
 
@@ -112,6 +131,9 @@ final class OmniPostLauncher: NSObject, NSApplicationDelegate {
             detailItem.title = message.detail ?? ""
             openItem.isEnabled = message.openEnabled ?? false
             logsItem.isEnabled = message.logsEnabled ?? false
+            stopItem.isEnabled = message.stopEnabled ?? false
+            restartItem.isEnabled = message.restartEnabled ?? false
+            quitItem.isEnabled = message.quitEnabled ?? false
             statusItem.button?.image = NSImage(
                 systemSymbolName: message.state == "failed" ? "exclamationmark.triangle.fill" : "paperplane.fill",
                 accessibilityDescription: "OmniPost \(message.label ?? "")"
@@ -120,6 +142,13 @@ final class OmniPostLauncher: NSObject, NSApplicationDelegate {
             if let path = message.path { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
         case "notice":
             showNotice(message.message ?? "The requested action is unavailable.")
+        case "stopTimedOut":
+            showStopTimeout(message)
+        case "confirmForceStop":
+            confirmForceStop(message)
+        case "quitReady":
+            quitApproved = true
+            NSApp.terminate(nil)
         default:
             break
         }
@@ -134,6 +163,8 @@ final class OmniPostLauncher: NSObject, NSApplicationDelegate {
         stateItem.title = "OmniPost: Failed"
         detailItem.title = detail
         openItem.isEnabled = false
+        stopItem.isEnabled = false
+        restartItem.isEnabled = false
         statusItem.button?.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "OmniPost Failed")
     }
 
@@ -146,4 +177,48 @@ final class OmniPostLauncher: NSObject, NSApplicationDelegate {
 
     @objc private func openOmniPost() { send("open") }
     @objc private func viewLogs() { send("viewLogs") }
+    @objc private func stopOmniPost() { send("stop") }
+    @objc private func restartOmniPost() { send("restart") }
+
+    @objc private func requestQuit() {
+        let alert = NSAlert()
+        alert.messageText = "Quit OmniPost?"
+        alert.informativeText = "The complete OmniPost runtime will stop before the Launcher exits. Active work may need time to finish."
+        alert.addButton(withTitle: "Stop and Quit")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn { send("quit") }
+    }
+
+    private func showStopTimeout(_ message: BridgeMessage) {
+        let alert = NSAlert()
+        alert.messageText = "OmniPost is still stopping"
+        alert.informativeText = [message.message, message.recovery].compactMap { $0 }.joined(separator: "\n\n")
+        alert.addButton(withTitle: "Keep Waiting")
+        alert.addButton(withTitle: "Force Stop…")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: send("keepWaiting")
+        case .alertSecondButtonReturn: send("requestForceStop")
+        default: break
+        }
+    }
+
+    private func confirmForceStop(_ message: BridgeMessage) {
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "Force Stop OmniPost?"
+        alert.informativeText = [message.message, message.recovery].compactMap { $0 }.joined(separator: "\n\n")
+        alert.addButton(withTitle: "Keep Waiting")
+        alert.addButton(withTitle: "Force Stop")
+        switch alert.runModal() {
+        case .alertSecondButtonReturn: send("confirmForceStop")
+        default: send("keepWaiting")
+        }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if quitApproved { return .terminateNow }
+        requestQuit()
+        return .terminateCancel
+    }
 }

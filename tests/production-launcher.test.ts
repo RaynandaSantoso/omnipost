@@ -1229,6 +1229,36 @@ describe("production launcher", () => {
     expect(reported.stdout).not.toContain(secret);
   });
 
+  it("joins a live Failed owner's cleanup while retaining its diagnostic record", async () => {
+    const port = await unusedPort();
+    const { directory, logPath } = stubCommands();
+    const environment = {
+      ...launcherEnvironment(directory, logPath, `http://127.0.0.1:${port}`),
+      OMNIPOST_STOP_TIMEOUT_MS: "1000",
+    };
+    const owner = spawn(process.execPath, [
+      "-e",
+      'process.on("SIGTERM", () => setTimeout(() => process.exit(0), 300)); setInterval(() => {}, 1000)',
+    ]);
+    const ownerExited = new Promise<void>((resolve) => owner.once("exit", () => resolve()));
+    writeOwnership(environment, {
+      ...ownershipRecord({ appUrl: `http://127.0.0.1:${port}/`, pid: owner.pid! }),
+      processStartTime: liveProcessStartTime(owner.pid!),
+      state: "failed",
+      failure: "The tunnel exited.",
+    });
+
+    const stopStartedAt = Date.now();
+    const stopped = await launcherCommand(["stop"], { env: environment });
+    const stopDurationMs = Date.now() - stopStartedAt;
+    await ownerExited;
+
+    expect(stopped.status).toBe(0);
+    expect(stopped.stdout).toContain("stopped cleanly");
+    expect(stopDurationMs).toBeGreaterThanOrEqual(250);
+    expect((await launcherCommand(["status"], { env: environment })).stdout).toContain("Failed");
+  });
+
   it("records a runtime health failure discovered by status", async () => {
     const port = await unusedPort();
     const { directory, logPath } = stubCommands();

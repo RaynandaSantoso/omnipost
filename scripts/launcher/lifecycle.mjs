@@ -171,9 +171,10 @@ function stop(signal = "SIGTERM") {
   stopping = true;
   shutdownProcesses = [...managed];
   const gracefulTimeout = setTimeout(() => {
-    if (!session || session.record.state === "failed") return;
+    if (!session) return;
+    const failure = session.record.state === "failed";
     session.record = updateOwnership(session.env, session.record, {
-      state: "stopping",
+      state: failure ? "failed" : "stopping",
       phase: "OmniPost may still be finishing an active Job",
       forceAllowed: true,
     });
@@ -396,7 +397,11 @@ export async function stopSession({ env, keepWaiting = false, force = false }) {
     });
   }
 
-  if (force && (record.state !== "stopping" || record.forceAllowed !== true)) {
+  if (
+    force &&
+    ((record.state !== "stopping" && record.state !== "failed") ||
+      record.forceAllowed !== true)
+  ) {
     return sessionSummary(record, {
       state: record.state,
       forceRefused: true,
@@ -405,9 +410,18 @@ export async function stopSession({ env, keepWaiting = false, force = false }) {
   }
 
   if (force) process.kill(record.pid, FORCE_STOP_SIGNAL);
-  else if (record.state !== "stopping") process.kill(record.pid, "SIGTERM");
+  else if (record.state !== "stopping") {
+    process.kill(record.pid, "SIGTERM");
+  }
   const timeoutMs = configuredStopTimeout(env, keepWaiting || force);
-  if ((await waitForSession(env, record, timeoutMs, 25)) === "released") {
+  const stopped = await waitForSession(
+    env,
+    record,
+    timeoutMs,
+    25,
+    (current) => record.state === "failed" && !ownerAlive(current),
+  );
+  if (stopped === "released" || stopped === "matched") {
     return sessionSummary(record, { state: "stopped", alreadyStopped: false });
   }
   const forcePermission = await waitForSession(
