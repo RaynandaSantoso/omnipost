@@ -1,15 +1,15 @@
-# Triage Labels
+# Triage labels
 
-The skills speak in terms of five canonical triage roles. This file maps those roles to the actual label strings used in this repo's issue tracker.
+Use these labels when explicitly asked to triage or publish tracker issues.
 
-| Label in mattpocock/skills | Label in our tracker | Meaning                                  |
-| -------------------------- | -------------------- | ----------------------------------------- |
-| `needs-triage`             | `needs-triage`       | Maintainer needs to evaluate this issue  |
-| `needs-info`               | `needs-info`         | Waiting on reporter for more information |
-| `ready-for-agent`          | `ready-for-agent`    | Fully specified, ready for an AFK agent  |
-| `ready-for-human`          | `ready-for-human`    | Requires human implementation            |
-| `wontfix`                  | `wontfix`            | Will not be actioned                     |
+| Label | Meaning |
+| --- | --- |
+| `needs-triage` | A maintainer needs to evaluate the issue. |
+| `needs-info` | Work is waiting on information from the reporter. |
+| `ready-for-agent` | The outcome, dependencies, and acceptance criteria are clear enough for an agent to implement independently. |
+| `ready-for-human` | Implementation requires human involvement. |
+| `wontfix` | The issue will not be implemented. |
 
-When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
-
-Edit the right-hand column to match whatever vocabulary you actually use.
+An implementation ticket's `ready-for-agent` status must also account for its
+blockers: a specified ticket is not ready to execute while a blocking ticket
+remains unresolved. See [the tracker guide](issue-tracker.md) for dependencies.

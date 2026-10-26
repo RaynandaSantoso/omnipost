@@ -11,8 +11,8 @@ import {
 const RESUMABLE_UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos";
 
 // Deliberately an internal constant, not operator-facing config: it exists
-// to keep peak memory well under the deployed VM's 1GB while staying above
-// the 256KB multiple YouTube's resumable protocol requires of non-final
+// to bound transfer memory on small hosts while staying above the
+// 256KB multiple YouTube's resumable protocol requires of non-final
 // chunks. There is nothing an operator would gain by tuning it.
 const CHUNK_SIZE_BYTES = 8 * 1024 * 1024;
 

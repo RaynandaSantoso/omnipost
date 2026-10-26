@@ -1,8 +1,7 @@
 import { z } from "zod";
 
-// Single source of truth for what a valid platform value is. TikTok and
-// Instagram each add one line here when their own PRDs land — nothing else
-// about this module changes.
+// Single source of truth for valid platform values. Adding a destination
+// extends this union; provider behavior belongs in its adapter and OAuth flow.
 export const platformSchema = z.enum(["dry-run", "youtube", "tiktok", "instagram"]);
 
 export type Platform = z.infer<typeof platformSchema>;

@@ -1,3 +1,11 @@
+## Repository orientation
+
+Start with [CONTRIBUTING.md](CONTRIBUTING.md), [CONTEXT.md](CONTEXT.md), and
+[docs/architecture.md](docs/architecture.md). See the [ADR index](docs/adr/README.md)
+for accepted and superseded decisions. Local planning files follow
+`docs/prd/<feature-slug>/spec.md` with ordered ticket files alongside; publish
+tracker issues only when explicitly requested.
+
 ## Agent skills
 
 ### Issue tracker

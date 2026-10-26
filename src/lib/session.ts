@@ -61,7 +61,7 @@ export function isHttps(request: Request): boolean {
 
 let warnedAboutPlaintext = false;
 
-// PRD: where the app can detect plaintext (no HTTPS and no
+// Where the app can detect plaintext (no HTTPS and no
 // X-Forwarded-Proto: https), it logs a startup-style warning rather than
 // refusing to boot — TLS termination is a documented deployment
 // precondition, not something the app can enforce from behind a proxy.

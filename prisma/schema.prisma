@@ -74,9 +74,8 @@ model Upload {
   jobs        Job[]
 }
 
-// One unit of background work: one upload to one platform. v0.1 fans out
-// to exactly one (dry-run) Job per Upload; real multi-platform fan-out
-// arrives with the YouTube/TikTok/Instagram adapters.
+// One unit of background work: one Upload to one target Platform. With no
+// connected platforms, an Upload instead receives one dry-run Job.
 model Job {
   id        String   @id @default(cuid())
   uploadId  String

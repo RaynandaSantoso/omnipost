@@ -4,11 +4,9 @@ import type {
   UploadResult,
 } from "@/lib/platform-adapter";
 
-// The user-facing dry-run feature (story 25), not a test double: it
-// exercises the entire pipeline end to end with no outbound call to any
-// platform, so a fresh install can be verified in one step before anything
-// real is at risk. It also validates the adapter boundary itself, ahead of
-// a second (YouTube) implementation being built against it.
+// The user-facing dry-run adapter exercises the upload-to-Job pipeline
+// without contacting a publishing platform. Its result is a local reference,
+// so a fresh installation can be verified before connecting real accounts.
 export class DryRunAdapter implements PlatformAdapter {
   readonly platform = "dry-run";
 

@@ -31,7 +31,7 @@ COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
 
 # Volume mount point for the SQLite database file. Documented in
-# docker-compose.yml and docs/setup — this is what makes uploads,
+# docker-compose.yml and README.md — this is what makes uploads,
 # credentials, and job history survive a restart or upgrade.
 RUN mkdir -p /app/data
 

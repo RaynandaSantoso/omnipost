@@ -1,58 +1,36 @@
-# ADR-0001: Oracle Cloud Always Free VM + dynamic-DNS domain for deployment
+# ADR-0001: Oracle Cloud VM and dynamic DNS for deployment
 
-Status: superseded by ADR-0004
-
-The VM was never stood up. The operator's own machine turned out to be the
-host, reached through a reserved ngrok domain — see
-`0004-operator-machine-is-the-host.md`. The reasoning below about *why*
-serverless was rejected still stands and is why ADR-0004 also runs a
-persistent process; only the choice of machine changed.
+Status: superseded by [ADR-0004](0004-operator-machine-is-the-host.md).
+The VM was not provisioned. This records a rejected deployment plan, not setup
+instructions or a dependency on an existing cloud account.
 
 ## Context
 
-OmniPost's earlier decision record (see git history / prior session)
-already ruled out serverless hosting: the background job runner is a
-long-lived process (polls, claims leases, heartbeats), SQLite and
-uploaded video files need to persist on disk between requests, and a real
-video upload can run for minutes — all incompatible with a functions
-platform. Vercel was evaluated and rejected on exactly these grounds.
+OmniPost needs a persistent process for its background Job runner, which polls
+for work, claims Leases, and renews them during uploads. SQLite and uploaded
+video files must survive between requests, and transfers can take minutes.
+Request-scoped serverless functions were rejected because the application
+assumes both durable local storage and work that continues after an HTTP
+response. Moving to serverless would require redesigning those boundaries.
 
-That leaves persistent-process hosts. The operator wants the entire stack,
-including hosting, at $0 ongoing cost.
+The deployment plan also sought no recurring hosting or domain charge.
 
-## Decision
+## Decision at the time
 
-**Host on an Oracle Cloud Always Free VM**, specifically the AMD-based
-`VM.Standard.E2.1.Micro` shape rather than the ARM Ampere A1 shape — Ampere
-A1 is also part of Always Free but is frequently unavailable ("out of
-capacity") in popular regions for new signups, while the AMD micro shape
-provisions reliably. The existing Dockerfile/docker-compose.yml run
-directly on the VM via `docker compose up`, unchanged from the local
-self-host path.
+Use an Oracle Cloud Always Free AMD micro VM with a free dynamic-DNS subdomain.
+Run the repository's Docker image with a persistent data volume and put a
+TLS-terminating reverse proxy in front of it. A bare VM was preferred over a
+paid managed host to meet the cost constraint; dynamic DNS avoided buying a
+domain. The small VM also motivated bounded-memory video transfers.
 
-**Domain: a free dynamic-DNS subdomain** (DuckDNS-style), not a purchased
-domain. This is IaaS, not a PaaS — Oracle gives a bare public IP, no
-bundled subdomain the way Fly.io/Railway/Vercel provide. A real domain
-would look more credible on TikTok's/Meta's app-review forms, but was
-explicitly traded away to keep total cost at $0.
+## Consequences and replacement
 
-## Consequences
+The operator would have maintained the operating system, Docker, TLS, and DNS,
+and accepted limited memory and the risk of losing a free instance. OAuth
+callbacks would have needed a stable public hostname and the public instance
+would have required an access password.
 
-- The operator manages the box directly: OS updates, Docker installation,
-  a reverse proxy for TLS termination (Caddy is the natural fit for
-  automatic Let's Encrypt certs from a single Caddyfile) — none of that
-  is handled by a managed platform.
-- `YOUTUBE_REDIRECT_URI` (and future TikTok/Instagram callback URLs) must
-  point at the dynamic-DNS hostname, not `localhost` — every OAuth app
-  registration needs updating once this deploy lands.
-- `ACCESS_PASSWORD` becomes non-optional in practice: the instance is
-  reachable off `localhost` the moment this ships.
-- Oracle's Always Free tier has a documented history of reclaiming
-  instances flagged as idle/low-utilization, and some users report
-  card-verification holds despite $0 billing. Accepted as a known
-  operational risk for a low-traffic personal tool, not a security
-  concern.
-- Revisit if: the VM gets reclaimed repeatedly, the AMD shape's 1GB RAM
-  becomes a real constraint, or the operator later wants the more
-  polished ops experience (custom domain, zero-config TLS/volumes) a
-  paid PaaS would give.
+[ADR-0004](0004-operator-machine-is-the-host.md) replaces the VM with the
+operator's Mac and a reserved tunnel. The persistent-process and durable-disk
+requirements remain. Docker remains an alternative self-hosting workflow; the
+old VM's memory budget is no longer a deployment requirement.

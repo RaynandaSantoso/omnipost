@@ -1,5 +1,37 @@
-# omnipost
-Upload a short video, upload everywhere
+# OmniPost
+
+Publish a short video to selected YouTube, TikTok, and Instagram accounts from
+one dashboard. OmniPost stores each upload and tracks one background Job per
+destination. It is a single-operator, self-hosted application with a shared
+password rather than individual user accounts.
+
+## Choose a run mode
+
+| Goal | Entry point | Public access |
+| --- | --- | --- |
+| Use OmniPost daily on macOS | `OmniPost.app` or `npm run launch` | Launcher manages one reserved ngrok tunnel. |
+| Develop with platform callbacks | `npm run dev` | Development launcher manages the tunnel. |
+| Develop locally or try dry-run | `npm run dev:app` | No tunnel; TikTok and Instagram callbacks are skipped. |
+| Self-host in a container | `docker compose up` | Supply your own routing and TLS if exposing the app. |
+
+For a fresh checkout, follow [CONTRIBUTING.md](CONTRIBUTING.md) for Node.js,
+dependency, and generated-client setup. See [the architecture guide](docs/architecture.md)
+for the code map, [CONTEXT.md](CONTEXT.md) for terms, and
+[the ADR index](docs/adr/README.md) for design rationale.
+
+### Current platform behavior
+
+- With no platform connected, an upload creates a dry-run Job and publishes
+  nowhere. Connected platforms can be selected separately for each upload.
+- YouTube requests public visibility and supports resumable transfers.
+- TikTok uses private Direct Post (`SELF_ONLY`), not the inbox upload flow. A
+  successful Job does not mean a public post. Public posting needs separate
+  review and implementation; see [ADR-0003](docs/adr/0003-tiktok-self-only-until-audited.md).
+- Instagram uses Instagram Login for Business or Creator accounts and fetches
+  the video from a signed public media URL. No Facebook Page is required.
+
+Publishing requires the relevant provider credentials and permissions; copying
+`.env.example` alone does not connect an account.
 
 ## Running (self-hosted)
 
@@ -44,9 +76,14 @@ from `PUBLIC_BASE_URL`, contains a random upload-scoped HMAC authorization
 value, and expires after one hour. The route deliberately bypasses the shared
 password gate because Meta cannot supply a browser session; the signature and
 expiry are its authorization boundary. Treat generated URLs as sensitive and
-keep `npm run dev` running until Instagram finishes processing the video.
+keep the app and its public routing running until Instagram finishes processing
+the video.
 
 ## Production Launcher (macOS)
+
+Complete the checkout setup in [CONTRIBUTING.md](CONTRIBUTING.md), including
+Prisma client generation. The native app also needs the Xcode Command Line Tools
+(`xcode-select --install`) to compile its Swift launcher on first use.
 
 Install and authenticate ngrok, then configure `PUBLIC_BASE_URL` and
 `ACCESS_PASSWORD` in `.env`. Double-click
@@ -90,8 +127,10 @@ Stop first asks the production app to drain active work, withdraws the tunnel,
 and releases idle-sleep prevention. If the configurable graceful wait
 (`OMNIPOST_STOP_TIMEOUT_MS`, 30 seconds by default) expires, keep waiting with
 `npm run launch:stop -- --wait` or explicitly force the recorded session with
-`npm run launch:stop -- --force`. Force Stop is never automatic; interrupted
-Jobs recover through their existing Lease and Transfer state.
+`npm run launch:stop -- --force`. Force Stop from this command requires
+`--force`; interrupted Jobs become recoverable through their Leases, with transfer resumption where supported.
+System-requested macOS termination has a separate bounded cleanup policy
+described below.
 
 There is at most one session per operator. Launching again while it is Running
 starts nothing and only brings the browser tab forward; launching while another
@@ -134,14 +173,14 @@ gracefully drains active work, and **Restart** waits for that verified cleanup
 before starting again. During a transition, lifecycle actions are disabled.
 
 If the graceful wait expires, choose **Keep Waiting** or deliberately confirm
-**Force Stop**; interrupted work recovers through its existing Lease and
-Transfer state. **Quit** first stops the complete runtime and exits only after
-cleanup. Cancelling a quit or timeout dialog keeps the menu-bar owner available.
+**Force Stop**; interrupted Jobs recover through their Leases, with transfer
+resumption where supported. **Quit** first stops the complete runtime and exits
+only after cleanup. Cancelling a quit or timeout dialog keeps the menu-bar owner available.
 macOS application termination, logout, and shutdown enter the same bounded
 cleanup path without showing an interaction-blocking confirmation dialog. If
 that system-requested grace period expires, the Launcher force stops its
 verified owned process groups so logout or shutdown can complete; interrupted
-Jobs recover through their Lease and Transfer state.
+Jobs recover through their Leases, with transfer resumption where supported.
 Closing the browser tab does not stop OmniPost; use Stop or Quit. The terminal
 Launcher commands above remain available for scripting, `npm run dev` and
 `npm run dev:app` remain independent development entry points, and Docker
@@ -151,9 +190,14 @@ self-hosting remains the separate container workflow described above.
 
 ```sh
 cp .env.example .env
-npm install
-npm run dev
+npm ci
+npx prisma generate
+npm run dev:app
 ```
+
+The commands above start local-only development with no provider setup.
+Use `npm run dev` after configuring the shared public runtime below to test
+public callbacks and Instagram media retrieval.
 
 `npm run dev` is the all-in-one development launcher. It always starts
 OmniPost and exactly one shared ngrok tunnel for every configured platform.
@@ -174,7 +218,9 @@ configuration that only works behind the shared tunnel — the TikTok and
 Instagram redirect URIs — is skipped rather than rejected, so a `.env` left
 over from a tunnel session still starts. Those platforms cannot be connected
 in such a run, and startup says which ones it skipped. Use `npm run dev` when
-you need them. YouTube is unaffected: its redirect URI is a localhost URL.
+you need them. YouTube configuration is retained; a registered localhost
+callback can work without a tunnel, while a public callback still needs
+reachable public routing.
 
 `DATABASE_URL` in `.env.example` defaults to a SQLite file under `./data/`,
 created on first run.
@@ -199,6 +245,20 @@ uses the shared origin's hostname for one ngrok tunnel, even when both
 platforms are configured. Use `npm run dev:app` instead when no tunnel is
 needed; it skips these redirect URIs rather than requiring them to be removed.
 
+### TikTok connection setup
+
+Configure an operator-owned TikTok developer application for Login Kit and
+Content Posting API access. OmniPost requests `user.info.basic` and
+`video.publish`. Register the exact callback URL, then set `TIKTOK_CLIENT_KEY`,
+`TIKTOK_CLIENT_SECRET`, `TIKTOK_REDIRECT_URI`, `PUBLIC_BASE_URL`,
+`ACCESS_PASSWORD`, and `TOKEN_ENCRYPTION_KEY` in `.env`. Start a public runtime
+and use **Connect TikTok** on the dashboard.
+
+The adapter requests private `SELF_ONLY` Direct Posts. Connecting an account
+does not demonstrate that the developer application is approved for public
+posting. Read [ADR-0003](docs/adr/0003-tiktok-self-only-until-audited.md) for the
+provider restrictions and the work needed before revisiting public visibility.
+
 ### Instagram connection setup
 
 OmniPost uses **Instagram API with Instagram Login**. The Instagram account
@@ -216,7 +276,7 @@ permissions. Then set `INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET`,
 > credentials, shown on the Instagram use case's own settings card. They are
 > not the Facebook app id and secret from the app dashboard — those are
 > different values, and they will not authenticate against this flow. An
-> installation set up before this change must replace both.
+> installation using the Facebook credential pair must replace both values.
 
 Disconnecting deletes OmniPost's stored token. Instagram Login has no revoke
 endpoint, so Meta keeps its record of the grant until you also remove OmniPost

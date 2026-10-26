@@ -30,8 +30,8 @@ function validateVideoFile(file: File, platforms: Platform[]): void {
 }
 
 // A fresh self-hosted installation stays safely verifiable with dry-run.
-// Once its owner connects a platform, every connected platform receives an
-// independent Job for the same Upload.
+// Without an explicit selection, connected platforms each receive a Job.
+// An explicit selection narrows the targets to the requested connections.
 async function selectedPlatforms(userId: string): Promise<Platform[]> {
   const connections = await prisma.platformConnection.findMany({
     where: { userId },

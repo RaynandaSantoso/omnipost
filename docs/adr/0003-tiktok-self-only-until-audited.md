@@ -1,39 +1,38 @@
-# ADR-0003: Build the TikTok adapter against SELF_ONLY now, flip to public later
+# ADR-0003: Keep TikTok Direct Post private until public posting is reviewed
 
-Status: accepted
+Status: accepted. Public posting is not implemented; this repository does not
+establish the review status of any operator's TikTok application.
 
 ## Context
 
-TikTok's Content Posting API forces `SELF_ONLY` visibility (private —
-lands in the operator's TikTok inbox, requiring a manual tap to actually
-publish) on any app that hasn't passed TikTok's Direct Post + public-
-visibility audit. This is enforced server-side by TikTok based on the
-calling app's review status; it is not a request parameter the adapter
-can override. Unlike Google's OAuth verification (which exempts apps
-under 100 users), TikTok grants no user-count exemption — a personal,
-single-operator tool still needs the same audit as a multi-tenant SaaS.
+The [TikTok adapter](../../src/lib/adapters/tiktok-adapter.ts) uses the Direct
+Post endpoint `/v2/post/publish/video/init/`, transfers the file, and polls for
+completion. It requests `SELF_ONLY` visibility.
 
-The audit requires a written use-case description and a screen-recording
-demo of the actual posting flow, submitted by the operator through the
-TikTok Developer Portal, with a turnaround of days to weeks.
+TikTok restricts unaudited Direct Post clients to private viewing. This is
+different from the Upload API's inbox notification flow; a successful private
+Direct Post is not a draft waiting for an inbox confirmation. See TikTok's
+[Direct Post guide](https://developers.tiktok.com/docs/en/content-posting-api-get-started)
+and [Upload API reference](https://developers.tiktok.com/docs/en/content-posting-api-reference-upload-video).
 
 ## Decision
 
-Ship the `TikTokAdapter` now, targeting `SELF_ONLY`. The operator submits
-the audit application in parallel, as a separate, non-blocking task. Once
-(if) approved, flip the requested visibility to public — the same
-one-line-change pattern already used for YouTube's privacy default,
-which shipped private in `d171c43` and became public in `73b31ee` once
-that was the confirmed intent.
+Keep the adapter's requested visibility fixed at `SELF_ONLY`. Do not infer
+public-posting approval from a successful connection or transfer. The returned
+`tiktok://publish/<id>` value is a publishing reference, not a public web URL.
 
-## Consequences
+## Consequences and revisit conditions
 
-- Every TikTok post is private-until-manually-published until the audit
-  clears — a real UX gap versus YouTube/Instagram, disclosed to the
-  operator rather than hidden.
-- No code needs to branch on audit status: the adapter always requests
-  the same visibility value, and that value is what changes post-audit.
-- If the audit is rejected or never submitted, TikTok integration
-  permanently means "lands in your inbox, tap to post" — worth revisiting
-  whether that's still valuable enough to keep, but not a reason to block
-  building it now.
+A completed TikTok Job means private Direct Post completion, not public reach.
+API access and application review remain operator-owned prerequisites.
+
+Public posting needs a separate implementation decision and review. TikTok's
+[sharing guidelines](https://developers.tiktok.com/docs/en/content-sharing-guidelines)
+require creator information and user-selected privacy and interaction controls;
+its intended-use rules also exclude private/internal account-management tools.
+OmniPost's single-operator scope is therefore a review constraint, not an
+assurance that approval will follow. Changing a visibility constant alone does
+not establish eligibility or implement those controls.
+
+External documentation checked on 2026-10-26. Recheck it when revisiting this
+decision; provider requirements can change independently of this repository.

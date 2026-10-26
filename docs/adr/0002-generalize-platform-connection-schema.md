@@ -1,45 +1,38 @@
-# ADR-0002: Generalize PlatformConnection and Job.platform before adding more platforms
+# ADR-0002: Platform-neutral account identifiers and application-validated platforms
 
-Status: accepted
+Status: accepted.
 
 ## Context
 
-`PlatformConnection.channelId` is YouTube-specific naming baked in during
-v0.1, when YouTube was the only platform. The UI currently shows this raw
-opaque id directly to the operator, with no human-readable name. `Job.platform`
-is a bare, unvalidated string. Two more platforms (TikTok, Instagram) are
-about to be added on top of this shape.
+The initial YouTube integration stored its account identifier as
+`PlatformConnection.channelId` and displayed that opaque value in the dashboard.
+Adding TikTok and Instagram required a name that did not imply a YouTube
+channel, plus a readable account label.
 
-Prisma has no true enum support on the SQLite provider — an "enum" there
-is enforced only via a CHECK constraint added through raw SQL, and SQLite
-can only change a CHECK constraint by rebuilding the whole table (no
-`ALTER TABLE ... ALTER CONSTRAINT`). Every new platform under that
-approach would mean a table-rebuilding migration.
+Platform values also need validation. A database CHECK constraint would couple
+each new destination to a schema migration, and changing such a constraint in
+SQLite requires rebuilding its table. The application already validates input
+at its boundaries, so it can own the allowed platform set.
 
 ## Decision
 
-- Rename `PlatformConnection.channelId` → `externalAccountId` (the
-  platform's own opaque identifier — works for TikTok's `open_id`,
-  Instagram's user id, etc. without further renaming).
-- Add `PlatformConnection.externalAccountLabel`: a human-readable
-  handle/display name, shown in the UI instead of the raw id.
-- Keep `Job.platform` as a plain string, validated at the application
-  layer through a single shared Zod/TS union type used everywhere a
-  platform value is produced or consumed — not a database-level enum or
-  CHECK constraint.
+- Store the platform's identifier in `externalAccountId` and its readable name
+  in nullable `externalAccountLabel`.
+- Keep platform columns as strings. Validate platform values using the shared
+  `platformSchema` and inferred `Platform` type in
+  [src/lib/platform.ts](../../src/lib/platform.ts).
+- Keep platform-specific account discovery inside each OAuth integration.
 
 ## Consequences
 
-- Adding TikTok/Instagram/future platforms costs one line in the shared
-  union type, no migration.
-- Nothing prevents an invalid platform string from reaching the database
-  directly (e.g. a hand-run SQL statement) — the guarantee is
-  application-layer only. Accepted: nothing outside this codebase writes
-  to this table.
-- The existing real YouTube `PlatformConnection` row (already connected,
-  live data, not just test fixtures) needs `externalAccountLabel`
-  backfilled as part of the migration — it has no label today, only the
-  channel id.
-- Every place currently reading `channelId` (API responses, the
-  dashboard's "Connected to `<id>`" display) needs updating in the same
-  pass — tracked in issue #13.
+Adding an allowed platform value does not require a database migration, though
+an integration still needs an adapter, connection flow, upload policy, and UI.
+Direct database writes can bypass platform validation; application code must
+validate values before storing or using them.
+
+The [migration](../../prisma/migrations/20260728120000_rename_channel_id_to_external_account_id/migration.sql)
+renames `channelId` without discarding identifiers and adds a nullable label.
+The startup backfill in [youtube-oauth.ts](../../src/lib/youtube-oauth.ts)
+fetches labels for older YouTube connections. It can retry on a later boot if
+lookup fails; a missing label does not erase the connection. New connections
+save their identifier and label together.
